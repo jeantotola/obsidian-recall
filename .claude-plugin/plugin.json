@@ -2,5 +2,19 @@
   "name": "recall",
   "description": "A git-native study system for Obsidian: write in one inbox, integrate it into your pages with a git diff to approve, and get a daily spaced-repetition quiz on the concepts you studied.",
   "version": "0.1.0",
-  "keywords": ["obsidian", "spaced-repetition", "study", "notes", "git", "anki"]
+  "keywords": [
+    "obsidian",
+    "spaced-repetition",
+    "study",
+    "notes",
+    "git",
+    "anki"
+  ],
+  "author": {
+    "name": "Jean Totola",
+    "url": "https://github.com/jeantotola"
+  },
+  "homepage": "https://github.com/jeantotola/obsidian-recall",
+  "repository": "https://github.com/jeantotola/obsidian-recall",
+  "license": "MIT"
 }

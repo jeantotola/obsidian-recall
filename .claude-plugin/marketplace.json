@@ -1,7 +1,7 @@
 {
   "name": "obsidian-recall",
   "owner": {
-    "name": "Jean"
+    "name": "Jean Totola"
   },
   "description": "Recall: a git-native study system for Obsidian.",
   "plugins": [

@@ -37,7 +37,7 @@ Recall targets macOS, Linux and WSL. Native Windows is untested.
 In Claude Code, opened in your vault:
 
 ```text
-/plugin marketplace add <owner>/obsidian-recall
+/plugin marketplace add jeantotola/obsidian-recall
 /plugin install recall@obsidian-recall
 ```
 
@@ -250,4 +250,4 @@ The last command loads the plugin from this folder for one session, without inst
 
 ## License
 
-Not chosen yet.
+MIT, see [LICENSE](LICENSE).
