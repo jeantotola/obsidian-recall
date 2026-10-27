@@ -27,7 +27,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 SRS_DIR = ".srs"
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 TEMPLATES = PLUGIN_ROOT / "templates"
