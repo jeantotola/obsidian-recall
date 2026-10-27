@@ -443,6 +443,32 @@ class GitFlowTest(VaultCase):
         self.assertEqual((self.vault / "Math/Bayes.md").read_text(), "user edit\n")
         self.srs("end")
 
+    def test_discard_removes_folders_left_empty(self):
+        self.srs("begin", "integrate")
+        self.edit_via_hook("Physics/Optics/Lenses.md", "# Lenses\n")
+        self.edit_via_hook("Math/Fresh.md", "# Fresh\n")
+        out = self.srs("discard").stdout
+        self.assertIn("removed empty folders Physics/Optics, Physics", out)
+        self.assertFalse((self.vault / "Physics").exists())
+        self.assertFalse((self.vault / "Math/Fresh.md").exists())
+        self.assertTrue((self.vault / "Math").is_dir())  # still holds other pages
+        self.srs("end")
+
+    def test_discard_keeps_folders_that_still_hold_files(self):
+        self.write("Physics/Old.md", "# Old\n")
+        self.srs("begin", "integrate")  # commits Physics/Old.md as a manual edit
+        self.edit_via_hook("Physics/Optics/Lenses.md", "# Lenses\n")
+        self.srs("discard")
+        self.assertFalse((self.vault / "Physics/Optics").exists())
+        self.assertTrue((self.vault / "Physics/Old.md").exists())
+        self.srs("end")
+
+    def test_abort_removes_folders_left_empty(self):
+        self.srs("begin", "integrate")
+        self.edit_via_hook("Physics/Lenses.md", "# Lenses\n")
+        self.assertIn("1 empty folder", self.srs("abort").stdout)
+        self.assertFalse((self.vault / "Physics").exists())
+
     def test_end_refuses_with_uncommitted_session_changes(self):
         self.srs("begin", "integrate")
         self.edit_via_hook("wiki/X.md", "x\n")
@@ -500,6 +526,23 @@ class ConfigTest(VaultCase):
         self.assertIn("Scheduling algorithm: thirds", out)
         self.assertEqual(self.config(other)["scheduling"]["algorithm"], "thirds")
         self.assertEqual(self.srs("init", "--algorithm", "sm2", cwd=self.tmp, check=False).returncode, 2)
+
+    def test_new_page_placement_defaults_to_folders_and_init_takes_it(self):
+        self.assertEqual(self.config()["new_page_placement"], "folders")
+        other = self.tmp / "other"
+        other.mkdir()
+        (other / "a.md").write_text("# A\n")
+        out = self.srs("init", "--git-init", "--new-page-placement", "flat", cwd=other).stdout
+        self.assertIn("New page placement: flat", out)
+        self.assertEqual(self.config(other)["new_page_placement"], "flat")
+        self.assertEqual(self.config(other)["paths"]["new_pages"], "wiki")
+        self.assertEqual(self.srs("init", "--new-page-placement", "tree", cwd=self.tmp, check=False).returncode, 2)
+
+    def test_unknown_placement_is_reported(self):
+        config = self.config()
+        config["new_page_placement"] = "tree"
+        (self.vault / ".srs/config.json").write_text(json.dumps(config))
+        self.assertIn("ERROR: Unknown new_page_placement 'tree'", self.srs("context", "integrate").stdout)
 
     def test_leech_threshold_follows_the_algorithm(self):
         self.index("## [[Bayes]]\n- Bayes' theorem\n")
@@ -721,6 +764,42 @@ class ContextTest(VaultCase):
         self.assertIn("- Eigenvectors  [queued]", out)
         self.assertIn("Process up to: 3", out)
         self.assertIn("] Second", out)
+
+    def test_integrate_context_lists_folders_two_levels_deep(self):
+        self.write("Math/Algebra/Groups/Cyclic.md", "# Cyclic\n")
+        self.write("Math/Algebra/Rings.md", "# Rings\n")
+        self.write("Math/Algebra/Fields.md", "# Fields\n")
+        self.write(".obsidian/plugins/x.md", "hidden\n")
+        self.write("Attachments/note.md", "excluded\n")
+        self.write("Loose.md", "# Loose\n")
+        config = json.loads((self.vault / ".srs/config.json").read_text())
+        config["exclude"].append("Attachments/")
+        (self.vault / ".srs/config.json").write_text(json.dumps(config))
+        out = self.srs("context", "integrate").stdout
+        self.assertIn("placement: folders", out)
+        self.assertIn("\n  (vault root): 1 page\n", out)
+        self.assertIn("\n  Math/ — 5 pages\n    Algebra/ — 3 pages\n", out)
+        self.assertNotIn("Groups", out)  # third level
+        self.assertNotIn("Templates", out)
+        self.assertNotIn("Attachments", out)
+        self.assertNotIn(".obsidian", out)
+
+    def test_flat_placement_points_to_the_new_pages_folder_only(self):
+        config = json.loads((self.vault / ".srs/config.json").read_text())
+        config["new_page_placement"] = "flat"
+        (self.vault / ".srs/config.json").write_text(json.dumps(config))
+        out = self.srs("context", "integrate").stdout
+        self.assertIn("New pages go in: wiki/ (placement: flat", out)
+        self.assertNotIn("## Folders", out)
+
+    def test_setup_context_offers_placement_and_suggests_folders(self):
+        bare = self.tmp / "bare"
+        (bare / "Notes").mkdir(parents=True)
+        (bare / "Notes/a.md").write_text("# A\n")
+        out = self.srs("context", "setup", cwd=bare).stdout
+        self.assertIn("--new-page-placement; default folders", out)
+        self.assertIn("  flat: ", out)
+        self.assertIn("Suggested: folders (the vault has pages in folders such as Notes)", out)
 
     def test_not_set_up(self):
         empty = self.tmp / "empty"

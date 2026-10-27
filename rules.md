@@ -8,7 +8,7 @@ These rules apply to every Recall command.
 2. **The concept is the key.** Concept names link the index, the review schedule and the pages, so they are unique across the index and stable.
 3. **The voice is the user's.** Move, link and adjust what the user wrote as little as possible. Put anything you add on your own in a callout that starts with `> [!claude]`. When the user's text has a factual error, keep it and point it out in the chat; never fix it silently. Never pad pages with textbook content.
 4. **State and arithmetic belong to the script.** Never write dates or intervals yourself, and never edit files under `.srs/`; call `srs.py`. A hook blocks direct edits there.
-5. **Integration ignores page size and folder structure.** New pages go flat into the new-pages folder, and the index organizes them. Page size is /maintenance's job.
+5. **Integration ignores page size, and places pages by the configured placement.** Page size is /maintenance's job. With `new_page_placement` set to `folders` (the default), a new page goes in the existing folder whose topic fits best; when none fits, propose a new folder that follows the vault's naming convention, and use the new-pages folder only when the vault has no thematic folders. With `flat`, every new page goes in the new-pages folder and the vault's folders are ignored.
 6. **Git-native.** Every operation ends in a commit made by `srs.py commit`. Content is committed only after the user approves the diff that `srs.py diff` shows. Never run git yourself: use `srs.py begin`, `diff`, `commit`, `discard`, `end` and `abort`.
 
 ## Running srs.py

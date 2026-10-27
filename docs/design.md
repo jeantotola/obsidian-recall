@@ -10,7 +10,7 @@ Recall turns an Obsidian vault into a study system with three moving parts: an i
 2. **The concept is the key.** Concept names link the index, the schedule and the pages, so they are unique and stable.
 3. **The voice is yours.** Claude moves, links and adjusts your text as little as possible, and marks its own additions with a `> [!claude]` callout. It points out factual errors in the chat instead of fixing them silently, and never pads pages with textbook content.
 4. **State and arithmetic belong to the script.** The model never writes dates and never edits `.srs/`; it calls `srs.py`. A hook enforces this.
-5. **Integration ignores page size and folder structure.** New pages go flat into one folder and the index organizes them. Page size is checked by `/maintenance`.
+5. **Integration ignores page size, and places pages by the configured placement.** With `new_page_placement` set to `folders` (the default), a new page goes in the existing folder whose topic fits best, or in a new folder that follows the vault's naming convention; the new-pages folder is the fallback for vaults with no thematic folders. With `flat`, every new page goes in the new-pages folder. Page size is checked by `/maintenance`.
 6. **Git-native.** Every operation ends in a commit, and no content is committed without your approval of its diff.
 
 ## Index and concepts
@@ -51,7 +51,7 @@ Each block has an id derived from its text, so its id changes if you edit it. `s
 
 1. The script commits your manual edits (`vault: manual edits`), opens a session, and reports the new-concept queue: how many concepts wait and how many days that is at the current pace.
 2. For each block, newest first, the index points to candidate pages, and Claude reads them before proposing anything.
-3. Claude writes the proposal directly into the files: a section of an existing page or a new page in the new-pages folder, in your wording, with links and index changes. Nothing is committed yet.
+3. Claude writes the proposal directly into the files: a section of an existing page or a new page, in your wording, with links and index changes. Where a new page goes depends on `new_page_placement`: with `folders`, the folder list in the context (two levels, without hidden or excluded folders, with page counts) lets Claude pick the best-fitting folder without reading the vault, and the diff message states the choice in one line; you can answer "move to X". With `flat`, it goes in the new-pages folder. Nothing is committed yet.
 4. The script shows the git diff. Your approval becomes a commit (`integrate: <block title>`) that also removes the block from the inbox. A change request makes Claude revise and show a new diff; skipping discards the edits through git and leaves the block in the inbox; stopping ends the round.
 5. At the end, one numbered list of the concepts touched, each with a suggestion and a half-line reason:
    - new concepts: review, or index only;
@@ -139,7 +139,7 @@ Leeches are where the review and the vault meet: a concept that keeps failing po
 
 ## /setup
 
-On a vault without Recall, `/setup` asks for the conversation language, the concept language, the paths, the heading level of inbox blocks, the exclusions, suggesting folders it detects (templates, daily notes, Excalidraw drawings), and the scheduling algorithm. It then runs `srs.py init`, which creates the git repository if needed (after asking), commits the vault's current content, writes `.srs/`, creates the inbox and the index if missing, completes `.gitignore`, and commits.
+On a vault without Recall, `/setup` asks for the conversation language, the concept language, the paths, where new pages go (`folders` or `flat`), the heading level of inbox blocks, the exclusions, suggesting folders it detects (templates, daily notes, Excalidraw drawings), and the scheduling algorithm. It then runs `srs.py init`, which creates the git repository if needed (after asking), commits the vault's current content, writes `.srs/`, creates the inbox and the index if missing, completes `.gitignore`, and commits.
 
 Each later run indexes one batch of pages (20 by default) with a Haiku subagent that only reads. The main agent merges the drafted entries into the index, resolving duplicates by choosing one owner (preferring a page about the concept over a diary-style page), and you approve the batch by diff. Nothing enters the schedule during setup, and every page starts unsealed. `/maintenance` reports pages created later by hand, and `/setup` indexes them.
 
@@ -151,7 +151,7 @@ Git is the review mechanism, the history and the safety net.
 - **One commit per operation.** Content, index and state go in together, with a prefix: `integrate:`, `quiz:`, `promote:`, `setup:` or `maintenance:`.
 - **Your manual edits.** What you change in Obsidian is committed as `vault: manual edits` at the start of the next command, so each Recall commit holds only what that command did.
 - **Sessions.** `.srs/session.json`, which is never committed, records the command in progress and every file written during it: by Claude (through the hook) and by the script. A commit includes only those files. Edits you make in parallel wait for the next `vault: manual edits`.
-- **Interrupted sessions.** The next command shows what was left uncommitted and asks whether to keep it (commit) or discard it (`srs.py abort`). Discarding only touches the files the session wrote; files you created yourself are left alone.
+- **Interrupted sessions.** The next command shows what was left uncommitted and asks whether to keep it (commit) or discard it (`srs.py abort`). Discarding only touches the files the session wrote; files you created yourself are left alone. Folders left empty by deleting session-created files are removed too.
 - **Undo.** `git revert HEAD` undoes the last operation, including its effect on the schedule.
 - **.gitignore.** `/setup` adds `.srs/session.json`, `.obsidian/workspace*.json` and `.trash/`.
 - **Subfolders.** The vault may be a subfolder of a larger repository; Recall reads and commits only inside it.
@@ -168,7 +168,7 @@ Git is the review mechanism, the history and the safety net.
 ## Portability
 
 - **Plugin, not copied files.** Skills, script, rules, agents and hooks live in the plugin; the vault holds only configuration, state and content. Installing at project scope keeps commands and hooks out of your other projects.
-- **Roles, not names.** The inbox, the index, the new-pages folder and the inbox heading level are configuration. `/setup` warns about existing files or folders with similar names, such as an `Inbox/` folder.
+- **Roles, not names.** The inbox, the index, the new-pages folder, the new-page placement and the inbox heading level are configuration. `/setup` warns about existing files or folders with similar names, such as an `Inbox/` folder.
 - **Exclusions.** Recall always ignores the inbox, the index, `CLAUDE.md` and `AGENTS.md` files, and hidden folders. The `exclude` list adds patterns: `folder/` for a folder, `*.excalidraw.md` for file names anywhere, `Daily/*.md` for paths.
 - **Preferences are editable defaults.** The conversation language, the concept language and the quiz rules.
 - **English everywhere it's published.** Skills, script, commit messages and documentation are in English; Claude talks to you in the configured language.

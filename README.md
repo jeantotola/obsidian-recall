@@ -64,7 +64,7 @@ Commands work by their short name when nothing else uses it; otherwise type `/re
 ### A day with Recall
 
 1. **Study and write.** Add blocks at the end of `inbox.md`, each starting with a `##` heading of a few words. A date in the heading is fine.
-2. **Run `/integrate`.** For each block, Claude finds the related pages through the index, writes the change and shows you the git diff. Approve it, ask for a change, skip the block (it stays in the inbox) or stop. At the end comes one list of the concepts it touched, each with a suggestion (review, or index only). Answer `ok` or adjust.
+2. **Run `/integrate`.** For each block, Claude finds the related pages through the index, writes the change and shows you the git diff, naming in one line the folder it chose for any new page and why (answer "move to X" to change it). Approve it, ask for a change, skip the block (it stays in the inbox) or stop. At the end comes one list of the concepts it touched, each with a suggestion (review, or index only). Answer `ok` or adjust.
 3. **Tomorrow, run `/quiz`.** One question per due concept, asked from its page. A missed concept comes back at the end of the session with another question, and again the next day.
 
 `/integrate 3` processes only the three newest blocks; `/integrate path/to/old-diary.md` integrates another file block by block, the same way.
@@ -96,7 +96,7 @@ The heading level is configurable, and headings inside code blocks don't count. 
 
 Undo the last operation with `git revert HEAD`: content, index and schedule go back together.
 
-If a session closes in the middle of a command, the next command shows what was left uncommitted and asks whether to keep or discard it. Discarding only touches the files Claude edited.
+If a session closes in the middle of a command, the next command shows what was left uncommitted and asks whether to keep or discard it. Discarding only touches the files Claude edited, and removes folders that end up empty after deleting files created in the session.
 
 ## The index
 
@@ -152,7 +152,8 @@ To check retention, run `python3 <plugin folder>/scripts/srs.py stats` in the va
 | `concept_language` | `English` | Language of concept names and index descriptions |
 | `paths.inbox` | `inbox.md` | Inbox page |
 | `paths.index` | `index.md` | Index page |
-| `paths.new_pages` | `wiki` | Folder for new pages |
+| `paths.new_pages` | `wiki` | Fallback folder for new pages: where they go with `flat`, or when the vault has no thematic folders |
+| `new_page_placement` | `folders` | `folders`: `/integrate` puts a new page in the existing folder whose topic fits best, or proposes a new folder in the vault's naming style. `flat`: every new page goes in `paths.new_pages` |
 | `inbox_heading_level` | `2` | Heading level that opens an inbox block |
 | `exclude` | `[]` | Patterns to ignore: `folder/`, `*.excalidraw.md`, `Daily/*.md` |
 | `scheduling.algorithm` | `anki` | `anki` or `thirds` |

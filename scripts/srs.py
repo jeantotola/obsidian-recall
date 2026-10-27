@@ -70,11 +70,17 @@ THIRDS_DEFAULTS = {
     "leech_threshold": 10,  # lapses, counting fails in relearning
 }
 
+PLACEMENTS = {
+    "folders": "new pages go in the vault's existing folder whose topic fits best",
+    "flat": "every new page goes in the new-pages folder, whatever the vault's folders",
+}
+
 DEFAULT_CONFIG = {
     "version": 1,
     "language": "English",
     "concept_language": "English",
     "paths": {"inbox": "inbox.md", "index": "index.md", "new_pages": "wiki"},
+    "new_page_placement": "folders",
     "inbox_heading_level": 2,
     "exclude": [],
     "scheduling": {
@@ -228,6 +234,14 @@ class Vault:
         return norm_rel(self.config["paths"]["new_pages"])
 
     @property
+    def placement(self) -> str:
+        value = self.config["new_page_placement"]
+        if value not in PLACEMENTS:
+            raise SrsError(f"Unknown new_page_placement '{value}'. Edit .srs/config.json to use one of: "
+                           + ", ".join(PLACEMENTS) + ".")
+        return value
+
+    @property
     def sched(self) -> dict:
         return self.config["scheduling"]
 
@@ -315,6 +329,28 @@ def is_excluded(v: Vault, rel: str) -> bool:
 
 def content_pages(v: Vault) -> list:
     return [rel for rel in list_markdown(v.root) if not is_excluded(v, rel)]
+
+
+def folder_outline(v: Vault, depth: int = 2) -> list:
+    """Visible, non-excluded folders down to `depth` levels, as (path, pages) in
+    tree order. Pages are content pages, counting the ones in deeper folders."""
+    pages = content_pages(v)
+    found = []
+
+    def walk(base: str, level: int) -> None:
+        folder = v.root / base if base else v.root
+        for name in sorted(os.listdir(str(folder)), key=str.casefold):
+            rel = f"{base}/{name}" if base else name
+            if name.startswith(".") or not (folder / name).is_dir():
+                continue
+            if any(matches_pattern(rel + "/", p) for p in v.config.get("exclude", [])):
+                continue
+            found.append((rel, sum(1 for page in pages if page.startswith(rel + "/"))))
+            if level < depth:
+                walk(rel, level + 1)
+
+    walk("", 1)
+    return found
 
 
 # ---------------------------------------------------------------------------
@@ -1180,6 +1216,21 @@ def format_checks(v: Vault, report: dict) -> list:
 # ---------------------------------------------------------------------------
 
 
+def prune_empty_folders(root: Path, rel: str) -> list:
+    """Remove the folders left empty by deleting `rel`, innermost first. Returns
+    their vault-relative paths. Hidden folders and the vault itself stay."""
+    removed = []
+    parts = rel.split("/")[:-1]
+    while parts and not any(part.startswith(".") for part in parts):
+        try:
+            (root.joinpath(*parts)).rmdir()
+        except OSError:
+            break
+        removed.append("/".join(parts))
+        parts.pop()
+    return removed
+
+
 def cmd_version(args):
     print(f"recall srs.py {VERSION}")
 
@@ -1214,6 +1265,8 @@ def cmd_init(args):
         config["paths"]["index"] = norm_rel(args.index)
     if args.new_pages:
         config["paths"]["new_pages"] = norm_rel(args.new_pages)
+    if args.new_page_placement:
+        config["new_page_placement"] = args.new_page_placement
     if args.heading_level:
         if not 1 <= args.heading_level <= 6:
             raise SrsError("--heading-level must be between 1 and 6.")
@@ -1241,6 +1294,7 @@ def cmd_init(args):
         paths.append(".gitignore")
     sha = repo.commit(paths, "setup: initialize Recall")
     print(f"Scheduling algorithm: {config['scheduling']['algorithm']}.")
+    print(f"New page placement: {config['new_page_placement']}.")
     print(f"Recall is set up. Committed {sha}: setup: initialize Recall.")
 
 
@@ -1302,7 +1356,7 @@ def cmd_commit(args):
 
 def discard_touched(v: Vault, repo: Repo, session: dict, include_state: bool):
     changed = repo.status()
-    restored, removed, kept = [], [], []
+    restored, removed, kept, folders = [], [], [], []
     for p in session.get("touched", []):
         if p.startswith(SRS_DIR + "/") and not include_state:
             kept.append(p)
@@ -1318,15 +1372,16 @@ def discard_touched(v: Vault, repo: Repo, session: dict, include_state: bool):
             if target.exists():
                 target.unlink()
             removed.append(p)
+            folders += prune_empty_folders(v.root, p)
     session["touched"] = kept
-    return restored, removed
+    return restored, removed, folders
 
 
 def cmd_discard(args):
     v = open_vault(args)
     repo = require_repo(v)
     session = require_session(v)
-    restored, removed = discard_touched(v, repo, session, include_state=False)
+    restored, removed, folders = discard_touched(v, repo, session, include_state=False)
     save_session(v, session)
     if not restored and not removed:
         print("Nothing to discard.")
@@ -1336,6 +1391,8 @@ def cmd_discard(args):
         parts.append("restored " + ", ".join(restored))
     if removed:
         parts.append("removed new files " + ", ".join(removed))
+    if folders:
+        parts.append("removed empty folders " + ", ".join(folders))
     print("Discarded: " + "; ".join(parts) + ".")
 
 
@@ -1361,9 +1418,10 @@ def cmd_abort(args):
         print("No session is open.")
         return
     repo = require_repo(v)
-    restored, removed = discard_touched(v, repo, session, include_state=True)
+    restored, removed, folders = discard_touched(v, repo, session, include_state=True)
     session_path(v).unlink()
-    print(f"Aborted /{session.get('command')}: restored {len(restored)} file(s), removed {len(removed)} new file(s).")
+    extra = f" and {len(folders)} empty folder(s)" if folders else ""
+    print(f"Aborted /{session.get('command')}: restored {len(restored)} file(s), removed {len(removed)} new file(s){extra}.")
 
 
 def cmd_status(args):
@@ -1780,7 +1838,15 @@ def context_setup(args) -> list:
         if conflicts:
             out.append("Possible name conflicts:")
             out += sorted(set(conflicts))
-        out.append("Suggested exclusions: " + (", ".join(suggest_exclusions(start)) or "none detected"))
+        suggested = suggest_exclusions(start)
+        out.append("Suggested exclusions: " + (", ".join(suggested) or "none detected"))
+        themed = sorted({rel.split("/")[0] for rel in list_markdown(start)
+                         if "/" in rel and not any(matches_pattern(rel, p) for p in suggested)})
+        out.append(f"New page placement (init --new-page-placement; default {DEFAULT_CONFIG['new_page_placement']}):")
+        out += [f"  {key}: {text}" for key, text in PLACEMENTS.items()]
+        out.append("  Suggested: " + (f"folders (the vault has pages in folders such as {', '.join(themed[:3])})"
+                                       if themed else "folders; with no folders yet, new pages go in the new-pages path"
+                                       " until the vault has some"))
         out.append(f"Scheduling algorithms (init --algorithm; default {DEFAULT_CONFIG['scheduling']['algorithm']}):")
         out += [f"  {key}: {entry.summary}" for key, entry in ALGORITHMS.items()]
         out.append("")
@@ -1866,7 +1932,22 @@ def context_integrate(v: Vault, extra: list) -> list:
     out.append(f"## Index ({v.index_rel}) — markers: [review] in review, [queued] waiting; unmarked = index only")
     out += annotated_index(text, idx, state) if text.strip() else ["(empty)"]
     out.append("")
-    out.append(f"New pages go in: {v.new_pages_rel}/")
+    if v.placement == "flat":
+        out.append(f"New pages go in: {v.new_pages_rel}/ (placement: flat; ignore the vault's folders)")
+    else:
+        out.append("New pages (placement: folders): put each in the existing folder whose topic fits best. "
+                   "If none fits, propose a new folder named by the vault's convention. "
+                   f"Use {v.new_pages_rel}/ only if the vault has no thematic folders.")
+        outline = folder_outline(v)
+        root_pages = sum(1 for page in content_pages(v) if "/" not in page)
+        out.append("")
+        out.append("## Folders (two levels; hidden and excluded left out; pages counted include subfolders)")
+        if root_pages:
+            out.append(f"  (vault root): {plural(root_pages, 'page')}")
+        out += [f"  {'  ' * rel.count('/')}{rel.rsplit('/', 1)[-1]}/ — {plural(n, 'page')}" for rel, n in outline]
+        if not outline:
+            out.append("  (no folders)")
+    out.append("")
     out.append(f"Description limit: {v.limits['description_max_chars']} characters.")
     out.append("")
     out.append("## Rules")
@@ -2023,6 +2104,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--inbox")
     p.add_argument("--index")
     p.add_argument("--new-pages")
+    p.add_argument("--new-page-placement", choices=list(PLACEMENTS),
+                   help="where /integrate puts new pages (default: folders)")
     p.add_argument("--heading-level", type=int)
     p.add_argument("--exclude", action="append")
     p.add_argument("--git-init", action="store_true", help="create a git repository if the folder has none")

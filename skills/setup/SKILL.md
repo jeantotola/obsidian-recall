@@ -19,10 +19,11 @@ The block above comes from Recall's script. Call the script as `python3 ${CLAUDE
    - the language Recall should talk to them in;
    - the language for concept names (default English);
    - the inbox, index and new-pages paths (defaults from the block; mention any name conflict it lists);
+   - where `/integrate` puts new pages: `folders` (the default; each new page goes in the existing folder whose topic fits best, and the new-pages path is only the fallback) or `flat` (every new page goes in the new-pages path). Suggest what the block suggests: `folders` when the vault already has folders with pages;
    - the heading level that opens an inbox block (default 2; if the inbox already exists, suggest the level its headings use);
    - folders or patterns to exclude (suggest the detected ones). Patterns: `folder/` for a folder, `*.excalidraw.md` for file names anywhere;
    - the scheduling algorithm, from the list in the block, one line each: `anki` (the default) or `thirds`. Mention that the README's Scheduling section compares them and that it can be changed later in `.srs/config.json`.
-3. Run `srs.py init` with the answers: `--algorithm <name> --language "..." --concept-language "..." --inbox "..." --index "..." --new-pages "..." --heading-level N`, one `--exclude "..."` per pattern, and `--git-init` only if the folder has no repository and the user agreed to create one.
+3. Run `srs.py init` with the answers: `--algorithm <name> --language "..." --concept-language "..." --inbox "..." --index "..." --new-pages "..." --new-page-placement <folders|flat> --heading-level N`, one `--exclude "..."` per pattern, and `--git-init` only if the folder has no repository and the user agreed to create one.
 4. If it reports a missing git identity, show the two commands it prints and stop; the user runs them and then /setup again.
 5. Continue with indexing. The block above was computed before setup, so get the first batch from `srs.py setup-batch`.
 
