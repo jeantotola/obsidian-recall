@@ -1,0 +1,14 @@
+{
+  "name": "obsidian-recall",
+  "owner": {
+    "name": "Jean"
+  },
+  "description": "Recall: a git-native study system for Obsidian.",
+  "plugins": [
+    {
+      "name": "recall",
+      "source": ".",
+      "description": "Write in one inbox, integrate it into your vault with a git diff to approve, and get a daily spaced-repetition quiz on what you studied."
+    }
+  ]
+}
