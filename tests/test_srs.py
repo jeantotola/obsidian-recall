@@ -577,6 +577,17 @@ class InboxTest(VaultCase):
         self.assertLess(out.index("] B"), out.index("] A"))
         self.assertEqual(len(self.ids()), 2)
 
+    def test_show_prints_one_block_as_is_and_labels_several_by_id(self):
+        self.write("inbox.md", "## Same title\nfirst\n\n## Same title\nsecond\n\n## Other\nthird\n")
+        newest, middle, oldest = self.ids()
+        self.assertEqual(self.srs("inbox", "show", middle).stdout, "## Same title\nsecond\n")
+        out = self.srs("inbox", "show", oldest, middle, newest).stdout
+        self.assertEqual(
+            out,
+            f"[{oldest}]\n## Same title\nfirst\n\n[{middle}]\n## Same title\nsecond\n\n[{newest}]\n## Other\nthird\n",
+        )
+        self.assertEqual(self.srs("inbox", "show", oldest, "nope", check=False).returncode, 2)
+
     def test_remove_keeps_everything_else_byte_for_byte(self):
         self.write("inbox.md", "Intro\r\n\r\n## A\r\none\r\n\r\n## B\r\ntwo\r\n")
         newest, oldest = self.ids()

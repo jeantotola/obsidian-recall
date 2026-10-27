@@ -1698,7 +1698,11 @@ def cmd_inbox(args):
     if missing:
         raise SrsError(f"No block with id {', '.join(missing)} in {rel} (it changed or was already removed).", 2)
     if args.action == "show":
-        for i in args.ids:
+        if len(args.ids) == 1:
+            print(by_id[args.ids[0]].text.rstrip("\n"))
+            return
+        for n, i in enumerate(args.ids):  # several blocks: label each with its id, since titles can repeat
+            print(f"{'' if n == 0 else chr(10)}[{i}]")
             print(by_id[i].text.rstrip("\n"))
         return
     drop = set()

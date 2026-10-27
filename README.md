@@ -53,7 +53,7 @@ Choose the **project** scope, so Recall's commands and hook load only in this va
 
 | Command | When | What it does |
 | --- | --- | --- |
-| `/integrate [n \| file]` | After studying | Moves inbox blocks into your pages, newest first, with one diff and one commit per block. Ends with one question: which concepts go into review. |
+| `/integrate [n \| file]` | After studying | Plans where the inbox blocks go, then moves them into your pages with one diff and one commit per block. Ends with one question: which concepts go into review. |
 | `/quiz` | Every day | Up to 20 questions on the concepts that are due. Answer in your own words. |
 | `/promote [page or topic]` | When you have time | Moves concepts that are only in the index into the review schedule. |
 | `/maintenance` | Now and then | Checks the index and the pages, audits unsealed pages, and seals the ones that pass. |
@@ -64,7 +64,7 @@ Commands work by their short name when nothing else uses it; otherwise type `/re
 ### A day with Recall
 
 1. **Study and write.** Add blocks at the end of `inbox.md`, each starting with a `##` heading of a few words. A date in the heading is fine.
-2. **Run `/integrate`.** For each block, Claude finds the related pages through the index, writes the change and shows you the git diff, naming in one line the folder it chose for any new page and why (answer "move to X" to change it). Approve it, ask for a change, skip the block (it stays in the inbox) or stop. At the end comes one list of the concepts it touched, each with a suggestion (review, or index only). Answer `ok` or adjust.
+2. **Run `/integrate`.** First Claude reads all the blocks it will process, groups the ones about the same subject (even when their titles are equal or vague) and shows a short plan: for each group, an existing page, a new page with its folder, or sections of one page. Answer `ok` or adjust it. Then, for each block, Claude writes the change and shows you the git diff: groups run from the newest to the oldest, and inside a group the blocks run from the oldest to the newest, so a page follows the order in which you learned the subject. A block that continues a page created or edited in the same session becomes a section of that page, unless the plan says otherwise. Approve each diff, ask for a change, skip the block (it stays in the inbox) or stop. At the end comes one list of the concepts it touched, each with a suggestion (review, or index only). Answer `ok` or adjust.
 3. **Tomorrow, run `/quiz`.** One question per due concept, asked from its page. A missed concept comes back at the end of the session with another question, and again the next day.
 
 `/integrate 3` processes only the three newest blocks; `/integrate path/to/old-diary.md` integrates another file block by block, the same way.

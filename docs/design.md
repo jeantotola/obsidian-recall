@@ -10,7 +10,7 @@ Recall turns an Obsidian vault into a study system with three moving parts: an i
 2. **The concept is the key.** Concept names link the index, the schedule and the pages, so they are unique and stable.
 3. **The voice is yours.** Claude moves, links and adjusts your text as little as possible, and marks its own additions with a `> [!claude]` callout. It points out factual errors in the chat instead of fixing them silently, and never pads pages with textbook content.
 4. **State and arithmetic belong to the script.** The model never writes dates and never edits `.srs/`; it calls `srs.py`. A hook enforces this.
-5. **Integration ignores page size, and places pages by the configured placement.** With `new_page_placement` set to `folders` (the default), a new page goes in the existing folder whose topic fits best, or in a new folder that follows the vault's naming convention; the new-pages folder is the fallback for vaults with no thematic folders. With `flat`, every new page goes in the new-pages folder. Page size is checked by `/maintenance`.
+5. **Integration ignores page size, and places pages by the configured placement.** With `new_page_placement` set to `folders` (the default), a new page goes in the existing folder whose topic fits best, or in a new folder that follows the vault's naming convention; the new-pages folder is the fallback for vaults with no thematic folders. With `flat`, every new page goes in the new-pages folder. Page size is checked by `/maintenance`. Integration plans the whole batch before it writes anything, so blocks on one subject end up together and no minimum page size is needed.
 6. **Git-native.** Every operation ends in a commit, and no content is committed without your approval of its diff.
 
 ## Index and concepts
@@ -38,7 +38,7 @@ Lines the parser doesn't understand inside a page section, and concepts outside 
 The inbox (default `inbox.md`) is the single page you write in, one block per subject.
 
 - A block starts at a heading of the configured level (default 2) and runs to the next heading of that level or higher. Headings inside code fences don't count. Text before the first block is kept and never processed.
-- New blocks go at the end; `/integrate` works from the end backwards, so today's notes come first.
+- New blocks go at the end; `/integrate` runs the groups of blocks from the end backwards, so today's notes come first.
 - Integrated blocks leave the inbox in the same commit as their integration; the original text stays in git history.
 - Skipped blocks stay where they are.
 - The inbox is excluded from indexing and from every check, whatever its size.
@@ -50,14 +50,15 @@ Each block has an id derived from its text, so its id changes if you edit it. `s
 `/integrate` moves the inbox into the vault. `/integrate 3` processes only the three newest blocks; `/integrate <file>` integrates another file block by block, such as an old diary page.
 
 1. The script commits your manual edits (`vault: manual edits`), opens a session, and reports the new-concept queue: how many concepts wait and how many days that is at the current pace.
-2. For each block, newest first, the index points to candidate pages, and Claude reads them before proposing anything.
-3. Claude writes the proposal directly into the files: a section of an existing page or a new page, in your wording, with links and index changes. Where a new page goes depends on `new_page_placement`: with `folders`, the folder list in the context (two levels, without hidden or excluded folders, with page counts) lets Claude pick the best-fitting folder without reading the vault, and the diff message states the choice in one line; you can answer "move to X". With `flat`, it goes in the new-pages folder. Nothing is committed yet.
-4. The script shows the git diff. Your approval becomes a commit (`integrate: <block title>`) that also removes the block from the inbox. A change request makes Claude revise and show a new diff; skipping discards the edits through git and leaves the block in the inbox; stopping ends the round.
-5. At the end, one numbered list of the concepts touched, each with a suggestion and a half-line reason:
+2. **Plan.** Before writing anything, Claude reads all the blocks it will process (`srs.py inbox show` with several ids labels each block by its id, so equal titles stay apart) and groups the blocks that deal with the same subject, even when their titles are equal or vague. The index points to the candidate pages, and Claude reads them. It then shows a short numbered list, one line per group: an existing page, a new page with its folder, or sections of one page. You answer "ok" or adjust it, and nothing is written until you do. There is no minimum page size: a group may be a single short page or section.
+3. **Order.** Groups run from the newest to the oldest, a group counting as its newest block. Inside a group the blocks run from the oldest to the newest, so a page follows the order in which you learned the subject.
+4. For each block, Claude writes the proposal directly into the files: a section of an existing page or a new page, in your wording, with links and index changes. A block that continues the subject of a page created or edited in the same session becomes a section of that page, not a new page, unless the plan says otherwise. Where a new page goes depends on `new_page_placement`: with `folders`, the folder list in the context (two levels, without hidden or excluded folders, with page counts) lets Claude pick the best-fitting folder without reading the vault, and the plan states the choice in one line; you can answer "move to X". With `flat`, it goes in the new-pages folder. Nothing is committed yet.
+5. The script shows the git diff. Your approval becomes a commit (`integrate: <block title>`) that also removes the block from the inbox. A change request makes Claude revise and show a new diff; skipping discards the edits through git and leaves the block in the inbox, and the next block of its group takes over the page or section the skipped block was to create; stopping ends the round.
+6. At the end, one numbered list of the concepts touched, each with a suggestion and a half-line reason:
    - new concepts: review, or index only;
    - concepts that were only in the index: promote, or not;
    - concepts already scheduled that received new content are updated automatically.
-6. Your answer is applied in one last commit (`integrate: queue N concepts`), and the session closes.
+7. Your answer is applied in one last commit (`integrate: queue N concepts`), and the session closes.
 
 Claude suggests review for concepts that are core to what you study now, foundations for other concepts, subtle distinctions, or things the block got wrong. It suggests index only for author or book details, names and dates, things you can look up in seconds, and peripheral facts. When the queue is long (more than 35 concepts by default), it suggests fewer.
 
