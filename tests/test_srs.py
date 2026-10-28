@@ -830,5 +830,24 @@ class ContextTest(VaultCase):
         self.assertNotIn("- Eigenvectors", out)
 
 
+class IntegrateOrderTest(unittest.TestCase):
+    """The skill, the README and the design describe the same order of blocks."""
+
+    DOCS = ("skills/integrate/SKILL.md", "README.md", "docs/design.md")
+
+    def test_blocks_follow_the_didactic_order_of_the_plan(self):
+        for name in self.DOCS:
+            text = (ROOT / name).read_text()
+            self.assertIn("didactic order", text, name)
+            self.assertIn("from the newest to the oldest", text, name)
+            self.assertNotIn("from the oldest to the newest", text, name)
+            self.assertNotIn("the order in which", text, name)
+
+    def test_existing_text_is_only_added_to(self):
+        skill = (ROOT / "skills/integrate/SKILL.md").read_text()
+        self.assertIn("not at the end of the page by default", skill)
+        self.assertIn("Never move or rewrite the text already on the page", skill)
+
+
 if __name__ == "__main__":
     unittest.main()
