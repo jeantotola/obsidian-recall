@@ -140,7 +140,7 @@ Both share the rest:
 
 **Make it yours.** Every number above is a parameter in `.srs/config.json` (see [Configuration](#configuration)); changes apply from the next answer. [docs/scheduling.md](docs/scheduling.md) has the exact formulas and shows how to add an algorithm of your own.
 
-To check retention, run `python3 <plugin folder>/scripts/srs.py stats` in the vault. Aim for 85 to 90% on reviews. If you are far from it, adjust `interval_modifier` (anki) or `multiplier` (thirds).
+To check retention, run `python3 <plugin folder>/scripts/srs.py stats` in the vault. It splits the reviews of the last 30 days into young (interval under 21 days) and mature (21 days or more), each with its count, plus the combined rate; a group with fewer than 30 reviews shows "not enough data". Calibrate on mature retention once it has enough reviews, and on young retention until then. Aim for 85 to 90%. If you are far from it, adjust `interval_modifier` (anki) or `multiplier` (thirds).
 
 ## Configuration
 
@@ -160,6 +160,7 @@ To check retention, run `python3 <plugin folder>/scripts/srs.py stats` in the va
 | `scheduling.daily_limit` | `20` | Concepts per day |
 | `scheduling.new_per_day` | `5` | New concepts per day |
 | `scheduling.day_starts_at` | `4` | Hour the study day starts |
+| `scheduling.mature_interval` | `21` | Days of interval from which `srs.py stats` counts a review as mature |
 | `scheduling.anki` | Anki's defaults | Parameters of `anki`, below |
 | `scheduling.thirds` | Recall's defaults | Parameters of `thirds`, below |
 | `limits.page_max_chars` | `6000` | Page size checked by `/maintenance` |

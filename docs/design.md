@@ -76,7 +76,7 @@ A concept is **new** (queued, never asked), **learning** (failed before its firs
 
 **Lapses and leeches.** A fail after graduation is a lapse. At the algorithm's leech threshold (8 lapses for `anki`, 10 for `thirds`), the concept is reported as a leech by `/quiz` and `/maintenance`: it is probably too broad (split it) or its page is unclear (rewrite it).
 
-**Calibration.** `srs.py stats` reports the pass rate on reviews over the last 30 days, once there are at least 30 reviews. Aim for 85 to 90%. Above 95%, reviews come too early: raise the algorithm's growth parameter (`interval_modifier` for `anki`, `multiplier` for `thirds`). Below 80%, lower it.
+**Calibration.** `srs.py stats` reports the pass rate on answers given in the review phase over the last 30 days, split into young reviews (interval before the answer under `scheduling.mature_interval`, 21 days by default) and mature reviews (that interval or more), each with its count, plus the combined rate. A group with fewer than 30 reviews shows "not enough data". Calibrate on mature retention once it has enough reviews, and on young retention until then. Aim for 85 to 90%. Above 95%, reviews come too early: raise the algorithm's growth parameter (`interval_modifier` for `anki`, `multiplier` for `thirds`). Below 80%, lower it.
 
 ### The daily list
 
@@ -91,7 +91,7 @@ In practice, 20 concepts a day sustain about 2 to 3 new concepts per day once th
 
 ## Log
 
-`.srs/log.csv` has one line per recorded answer: study day, concept, pass or fail, and the phase before the answer. About 45 bytes per line, or a few hundred kilobytes per year.
+`.srs/log.csv` has one line per recorded answer: study day, concept, pass or fail, and the phase and interval before the answer. Logs from before 0.5.0 get the interval column on the next answer; their older lines have no interval and count only in the combined rate. About 50 bytes per line, or a few hundred kilobytes per year.
 
 The schedule doesn't depend on the log: the rules use only each concept's current state, which grows with the number of concepts, not with time. The log serves calibration (`srs.py stats`) and a possible future switch to FSRS, and it is the only record that can't be rebuilt later. Only the script reads it; it never enters the model's context. Question texts are not logged; each concept keeps its last three questions in the state, so the next question can take another angle.
 

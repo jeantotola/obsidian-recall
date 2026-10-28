@@ -637,7 +637,7 @@ class ReviewFlowTest(VaultCase):
         state = json.loads((self.vault / ".srs/state.json").read_text())
         self.assertEqual(state["concepts"]["Eigenvectors"]["questions"], ["what defines an eigenvector"])
         log = (self.vault / ".srs/log.csv").read_text().splitlines()
-        self.assertEqual(log[1:], ["2026-01-11,Eigenvectors,pass,new", "2026-01-11,Bayes' theorem,fail,new"])
+        self.assertEqual(log[1:], ["2026-01-11,Eigenvectors,pass,new,0", "2026-01-11,Bayes' theorem,fail,new,0"])
         files = self.git("show", "--name-only", "--format=", "HEAD").split()
         self.assertEqual(sorted(files), [".srs/log.csv", ".srs/state.json"])
 
@@ -828,6 +828,55 @@ class ContextTest(VaultCase):
         out = self.srs("context", "promote", "bayes").stdout
         self.assertIn("Bayes' theorem", out)
         self.assertNotIn("- Eigenvectors", out)
+
+
+class StatsTest(VaultCase):
+    def log(self, *groups):
+        """Write .srs/log.csv from (count, result, phase, interval) groups, all on the study day."""
+        lines = ["day,concept,result,phase,interval"]
+        for count, result, phase, interval in groups:
+            lines += [f"2026-01-10,C{len(lines)},{result},{phase},{interval}" for _ in range(count)]
+        (self.vault / ".srs/log.csv").write_text("\n".join(lines) + "\n")
+
+    def test_splits_young_and_mature_and_counts_only_review_answers(self):
+        self.log((27, "pass", "review", 5), (3, "fail", "review", 20),
+                 (36, "pass", "review", 21), (4, "fail", "review", 90),
+                 (50, "fail", "new", 0), (50, "fail", "learning", 0), (50, "fail", "relearning", 30))
+        out = self.srs("stats").stdout
+        self.assertIn("young (interval under 21 days): 90% of 30 (on target)", out)
+        self.assertIn("mature (interval of 21 days or more): 90% of 40 (on target)", out)
+        self.assertIn("combined: 90% of 70", out)
+        self.assertIn("Calibrate on mature retention.", out)
+
+    def test_a_group_below_30_reviews_has_not_enough_data(self):
+        self.log((30, "pass", "review", 3), (5, "pass", "review", 40))
+        out = self.srs("stats").stdout
+        self.assertIn("young (interval under 21 days): 100% of 30 (above 95%", out)
+        self.assertIn("mature (interval of 21 days or more): not enough data (5 of the 30 needed)", out)
+        self.assertIn("Calibrate on young retention until mature has 30 reviews.", out)
+
+    def test_threshold_comes_from_config(self):
+        config = json.loads((self.vault / ".srs/config.json").read_text())
+        config["scheduling"]["mature_interval"] = 7
+        (self.vault / ".srs/config.json").write_text(json.dumps(config))
+        self.log((30, "pass", "review", 7), (30, "fail", "review", 6))
+        out = self.srs("stats").stdout
+        self.assertIn("mature (interval of 7 days or more): 100% of 30", out)
+        self.assertIn("young (interval under 7 days): 0% of 30 (below 80%", out)
+
+    def test_old_log_gets_the_interval_column_and_its_rows_count_only_in_combined(self):
+        self.index("## [[Bayes]]\n- Bayes' theorem\n")
+        self.srs("add", "--source", "promote", "Bayes' theorem")
+        (self.vault / ".srs/log.csv").write_text("day,concept,result,phase\n2026-01-10,Old,pass,review\n")
+        self.srs("record", "Bayes' theorem", "pass", today="2026-01-11")
+        lines = (self.vault / ".srs/log.csv").read_text().splitlines()
+        self.assertEqual(lines, ["day,concept,result,phase,interval", "2026-01-10,Old,pass,review",
+                                 "2026-01-11,Bayes' theorem,pass,new,0"])
+        out = self.srs("stats", today="2026-01-11").stdout
+        self.assertIn("young (interval under 21 days): not enough data (0 of the 30 needed)", out)
+        self.assertIn("combined: 100% of 1", out)
+        self.assertIn("1 older review(s) logged without an interval", out)
+        self.assertIn("Too few reviews to calibrate yet.", out)
 
 
 class IntegrateOrderTest(unittest.TestCase):

@@ -27,7 +27,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 SRS_DIR = ".srs"
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 TEMPLATES = PLUGIN_ROOT / "templates"
@@ -36,7 +36,7 @@ RULES_FILE = PLUGIN_ROOT / "rules.md"
 SYSTEM_FILE_NAMES = {"claude.md", "claude.local.md", "agents.md"}
 GITIGNORE_LINES = [".srs/session.json", ".obsidian/workspace*.json", ".trash/"]
 SESSION_EXCLUDE = ":(exclude).srs/session.json"
-LOG_HEADER = ["day", "concept", "result", "phase"]
+LOG_HEADER = ["day", "concept", "result", "phase", "interval"]
 DESC_SEP = " — "  # space, em dash, space
 SOURCE_RANK = {"integrate": 0, "promote": 1}
 EXCLUSION_HINTS = ("template", "attachment", "asset", "excalidraw", "daily", "journal", "archive")
@@ -88,6 +88,7 @@ DEFAULT_CONFIG = {
         "daily_limit": 20,
         "new_per_day": 5,
         "day_starts_at": 4,
+        "mature_interval": 21,  # days; a review answered at this interval or longer is mature
         "anki": dict(ANKI_DEFAULTS),
         "thirds": dict(THIRDS_DEFAULTS),
     },
@@ -561,6 +562,12 @@ def append_log(v: Vault, row: list) -> None:
     path = v.srs / "log.csv"
     exists = path.exists()
     path.parent.mkdir(parents=True, exist_ok=True)
+    if exists:
+        # Logs from before 0.5.0 have no interval column: widen the header; old rows read it as empty.
+        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+        header = ",".join(LOG_HEADER)
+        if lines and lines[0].strip() != header:
+            path.write_text(header + "\n" + "".join(lines[1:]), encoding="utf-8")
     with path.open("a", encoding="utf-8", newline="") as fh:
         writer = csv.writer(fh)
         if not exists:
@@ -1461,12 +1468,13 @@ def cmd_record(args):
     if name not in items:
         raise SrsError(f"{name} is not in today's list.", 2)
     before = rec["phase"]
+    interval = int(rec.get("interval") or 0)
     updated = apply_answer(rec, args.result == "pass", v.today, v.sched, name)
     if args.question:
         updated["questions"] = (list(rec.get("questions") or []) + [short(args.question, 200)])[-3:]
     state["concepts"][name] = updated
     save_state(v, state)
-    append_log(v, [v.today.isoformat(), name, args.result, before])
+    append_log(v, [v.today.isoformat(), name, args.result, before, interval])
     print(describe_answer(name, before, updated, v.today, v.leech_at))
 
 
@@ -1572,33 +1580,58 @@ def cmd_unflag(args):
     print(f"Removed the thin flag from {rel}.")
 
 
+def retention_verdict(rate: float, target: list, knob: str) -> str:
+    low, high = target
+    if rate > 0.95:
+        return f"above 95%: reviews come too early; consider raising {knob}"
+    if rate < 0.80:
+        return f"below 80%: reviews come too late; consider lowering {knob}"
+    if low <= rate <= high:
+        return "on target"
+    return f"outside the {low:.0%}-{high:.0%} target, but close"
+
+
+def pass_rate(rows: list) -> float:
+    return sum(1 for r in rows if r["result"] == "pass") / len(rows)
+
+
 def cmd_stats(args):
     v = open_vault(args)
     state = load_state(v)
     rows = read_log(v)
     start = v.today - days(29)
     recent = [r for r in rows if parse_day(r["day"]) >= start]
+    # Only answers given in the review phase: the log stores the phase before the answer.
     reviews = [r for r in recent if r["phase"] == "review"]
     name, _, entry = algorithm(v.sched)
     knob = f"scheduling.{name}.{entry.growth_key}"
+    mature_at = int(v.sched["mature_interval"])
     print(f"Study day: {v.today}")
     print(f"Scheduling algorithm: {name}")
-    if reviews:
-        rate = sum(1 for r in reviews if r["result"] == "pass") / len(reviews)
-        low, high = v.config["target_retention"]
-        if len(reviews) < 30:
-            verdict = "too few reviews to judge; wait for at least 30"
-        elif rate > 0.95:
-            verdict = f"above 95%: reviews come too early; consider raising {knob}"
-        elif rate < 0.80:
-            verdict = f"below 80%: reviews come too late; consider lowering {knob}"
-        elif low <= rate <= high:
-            verdict = "on target"
-        else:
-            verdict = f"outside the {low:.0%}-{high:.0%} target, but close"
-        print(f"Retention on reviews, last 30 days: {rate:.0%} of {len(reviews)} ({verdict})")
-    else:
+    if not reviews:
         print("Retention on reviews, last 30 days: no reviews yet")
+    else:
+        known = [r for r in reviews if (r.get("interval") or "").strip()]
+        young = [r for r in known if int(r["interval"]) < mature_at]
+        mature = [r for r in known if int(r["interval"]) >= mature_at]
+        print("Retention on reviews, last 30 days:")
+        for label, group in ((f"young (interval under {mature_at} days)", young),
+                             (f"mature (interval of {mature_at} days or more)", mature)):
+            if len(group) < 30:
+                print(f"  {label}: not enough data ({len(group)} of the 30 needed)")
+            else:
+                rate = pass_rate(group)
+                print(f"  {label}: {rate:.0%} of {len(group)} "
+                      f"({retention_verdict(rate, v.config['target_retention'], knob)})")
+        print(f"  combined: {pass_rate(reviews):.0%} of {len(reviews)}")
+        if len(known) < len(reviews):
+            print(f"  ({len(reviews) - len(known)} older review(s) logged without an interval count only in combined)")
+        if len(mature) >= 30:
+            print("Calibrate on mature retention.")
+        elif len(young) >= 30:
+            print("Calibrate on young retention until mature has 30 reviews.")
+        else:
+            print("Too few reviews to calibrate yet.")
     counts = defaultdict(int)
     for rec in state["concepts"].values():
         counts[rec["phase"]] += 1

@@ -93,7 +93,9 @@ Recall's own rules, built for pass and fail: no ease, a fixed multiplier, and a 
 
 ## Calibrating
 
-`python3 <plugin folder>/scripts/srs.py stats` reports the pass rate on reviews over the last 30 days, once there are at least 30 reviews. Aim for 85 to 90% (`target_retention`).
+`python3 <plugin folder>/scripts/srs.py stats` reports the pass rate on reviews over the last 30 days. It counts only answers given in the review phase, not new, learning or relearning ones, and splits them by the interval before the answer: young under `scheduling.mature_interval` (21 days by default, as in Anki), mature at that interval or more. Each group shows its rate and count, or "not enough data" below 30 reviews; a combined rate follows.
+
+Calibrate on mature retention once it has 30 reviews, and on young retention until then. Mature reviews test the long intervals that matter most, and they are less noisy than the first short ones. Aim for 85 to 90% (`target_retention`).
 
 - Above 95%, reviews come too early: raise `interval_modifier` (anki) or `multiplier` (thirds).
 - Below 80%, they come too late: lower it.
