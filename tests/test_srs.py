@@ -1068,12 +1068,31 @@ class QuizPrefetchTest(unittest.TestCase):
         skill = (ROOT / "skills/quiz/SKILL.md").read_text()
         self.assertIn("recall:question-drafter", skill)
         self.assertIn("run_in_background", skill)
-        self.assertIn("up to 5 concepts", skill)
+        self.assertIn("two batches", skill)
+        self.assertIn("concepts 2 to 4 of the list", skill)
+        self.assertIn("all the rest", skill)
+        self.assertNotIn("up to 5 concepts", skill)
         self.assertIn("same owner page always go in the same batch", skill)
+        self.assertIn("joins the first batch", skill)
         self.assertIn("Leave concept 1 out", skill)
         self.assertIn("write nothing to the user", skill)
         self.assertIn("Read the page only if the user contests", skill)
         self.assertIn("srs.py flag", skill)
+
+    def test_quiz_skill_is_silent_when_a_drafter_reports(self):
+        skill = (ROOT / "skills/quiz/SKILL.md").read_text()
+        head = skill.split("## Steps")[0]
+        self.assertIn("## Silence when a drafter reports", head)
+        rule = head.split("## Silence when a drafter reports")[1]
+        self.assertIn("write nothing at all", rule)
+        self.assertIn("end the turn immediately", rule)
+        self.assertIn("not the user", rule)
+        self.assertIn("Do not repeat the pending question", rule)
+
+    def test_quiz_skill_still_asks_for_itself_when_a_batch_is_missing(self):
+        skill = (ROOT / "skills/quiz/SKILL.md").read_text()
+        self.assertIn("If its batch has arrived, use the drafted QUESTION. Otherwise read its page", skill)
+        self.assertIn("If a batch fails or never arrives, ask its concepts yourself", skill)
 
     def test_scheduling_steps_are_unchanged(self):
         skill = (ROOT / "skills/quiz/SKILL.md").read_text()
@@ -1085,7 +1104,8 @@ class QuizPrefetchTest(unittest.TestCase):
         for name in ("README.md", "docs/design.md"):
             text = (ROOT / name).read_text()
             self.assertIn("question-drafter", text, name)
-            self.assertIn("5 concepts", text, name)
+            self.assertIn("two batches", text, name)
+            self.assertNotIn("up to 5 concepts", text, name)
 
 
 if __name__ == "__main__":

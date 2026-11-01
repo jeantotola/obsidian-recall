@@ -238,7 +238,7 @@ obsidian-recall/
 - **The script decides.** `srs.py` computes every date and the daily list, checks the index, parses the inbox and runs git. Each command injects its output before Claude reads the command, so the daily list arrives ready.
 - **Claude writes, asks and judges.** It integrates your notes, asks questions from each concept's page, and judges answers strictly. You can contest a verdict.
 - **The hook keeps both in their lanes.** It blocks direct edits to `.srs/`, lets Claude edit notes without prompts only while a command is open (recording each file for the diff), and lets the plugin's own script run without permission prompts. Because the review is the git diff, it works the same in every permission mode.
-- **Cheap agents read in bulk.** Indexing and auditing pages run in Haiku subagents that can only read. In `/quiz`, read-only `question-drafter` subagents (same model as the session) draft the questions for concepts 2 onward in batches of up to 5 concepts (concepts on the same page share a batch) while you answer the first ones.
+- **Cheap agents read in bulk.** Indexing and auditing pages run in Haiku subagents that can only read. In `/quiz`, read-only `question-drafter` subagents (same model as the session) draft the questions for concepts 2 onward in two batches (concepts 2 to 4, then all the rest; concepts on the same page share a batch) while you answer the first one. Their completion is silent, so nothing interrupts your answer.
 
 ## Development
 

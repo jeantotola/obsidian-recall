@@ -12,6 +12,12 @@ allowed-tools:
 
 The block above comes from Recall's script. Call the script as `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/srs.py <command>`, written `srs.py <command>` below, on its own on the command line. Follow the quiz rules and the rules in the block.
 
+## Silence when a drafter reports
+
+**When a `recall:question-drafter` finishes (a task notification or a hand-back message from a subagent), write nothing at all and end the turn immediately.** No status, no reminder, no recap, no tool call. Do not repeat the pending question. Keep the result for the concept's turn.
+
+Why: that message comes from the harness, not the user. Anything you write in answer to it lands in the chat between the user's question and their answer, buries the question and makes it look as if you were waiting for something else. The user is still answering; the drafted questions are only used when their concept comes up.
+
 ## Before you start
 
 - If the block says NOT SET UP, tell the user to run /setup, and stop.
@@ -23,11 +29,11 @@ The block above comes from Recall's script. Call the script as `python3 ${CLAUDE
 1. Run `srs.py begin quiz`.
 
 2. Prepare the questions in the background, in this same turn, before asking anything:
-   1. Leave concept 1 out. Split the rest of today's list, in order, into batches of up to 5 concepts. Concepts with the same owner page always go in the same batch, even if that makes it larger than 5: add each concept to the batch that already holds its page, and open a new batch when the current one has 5 or more. Leave out any concept whose page line says to skip it, and tell the user.
-   2. Launch one `recall:question-drafter` agent per batch with the Agent tool, in the background (`run_in_background`), all in one message. Give each the path of `.srs/quiz-rules.md`, the language to ask in, and for each concept in its batch: the name, the owner page, the focus and the recent questions.
+   1. Leave concept 1 out. Split the rest of today's list into two batches, in order: the first batch holds concepts 2 to 4 of the list, the second holds all the rest (concept 5 onward). Concepts with the same owner page always go in the same batch: a concept from the rest that shares its page with a concept of the first batch joins the first batch, even if that makes it larger than 3. If the list has no concept 5, or the rest ends up empty, launch only the first batch. Leave out any concept whose page line says to skip it, and tell the user.
+   2. Launch one `recall:question-drafter` agent per batch (at most two) with the Agent tool, in the background (`run_in_background`), all in one message. Give each the path of `.srs/quiz-rules.md`, the language to ask in, and for each concept in its batch: the name, the owner page, the focus and the recent questions.
    3. Then read concept 1's page and ask its question yourself, as in step 3. If there is only one concept, launch nothing.
 
-   When a batch finishes, write nothing to the user; keep its result. If a batch fails or never arrives, ask its concepts yourself, as in step 3.
+   When a batch finishes, follow "Silence when a drafter reports" above: write nothing to the user and end the turn; keep its result. If a batch fails or never arrives, ask its concepts yourself, as in step 3.
 
 3. For each concept in today's list, in order:
    1. If its batch has arrived, use the drafted QUESTION. Otherwise read its page, find what it says about the concept and formulate one question yourself. Either way follow the quiz rules, and put the count first ("3/14"). Wait for the answer.
