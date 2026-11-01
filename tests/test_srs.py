@@ -1042,5 +1042,51 @@ class IntegrateOrderTest(unittest.TestCase):
         self.assertIn("Never move or rewrite the text already on the page", skill)
 
 
+class QuizPrefetchTest(unittest.TestCase):
+    """/quiz prepares questions with a read-only question-drafter, and the docs say so."""
+
+    def frontmatter(self, path):
+        text = (ROOT / path).read_text()
+        self.assertTrue(text.startswith("---\n"), path)
+        head = text.split("---\n", 2)[1]
+        return dict(line.split(": ", 1) for line in head.splitlines() if ": " in line)
+
+    def test_drafter_is_read_only_and_inherits_the_model(self):
+        meta = self.frontmatter("agents/question-drafter.md")
+        self.assertEqual(meta["name"], "question-drafter")
+        self.assertEqual(meta["model"], "inherit")
+        self.assertEqual({t.strip() for t in meta["tools"].split(",")}, {"Read", "Glob", "Grep"})
+
+    def test_drafter_returns_what_the_quiz_needs(self):
+        text = (ROOT / "agents/question-drafter.md").read_text()
+        for field in ("CONCEPT:", "QUESTION:", "SECOND:", "ANSWER:", "THIN:"):
+            self.assertIn(field, text)
+        self.assertIn("quiz-rules.md", text)
+        self.assertIn("give away", text)
+
+    def test_quiz_skill_launches_batches_in_the_background(self):
+        skill = (ROOT / "skills/quiz/SKILL.md").read_text()
+        self.assertIn("recall:question-drafter", skill)
+        self.assertIn("run_in_background", skill)
+        self.assertIn("up to 5 concepts", skill)
+        self.assertIn("same owner page always go in the same batch", skill)
+        self.assertIn("Leave concept 1 out", skill)
+        self.assertIn("write nothing to the user", skill)
+        self.assertIn("Read the page only if the user contests", skill)
+        self.assertIn("srs.py flag", skill)
+
+    def test_scheduling_steps_are_unchanged(self):
+        skill = (ROOT / "skills/quiz/SKILL.md").read_text()
+        self.assertIn('srs.py record "<Concept>" pass', skill)
+        self.assertIn('srs.py commit -m "quiz: <score>"', skill)
+        self.assertIn("Don't record these.", skill)
+
+    def test_readme_and_design_describe_it(self):
+        for name in ("README.md", "docs/design.md"):
+            text = (ROOT / name).read_text()
+            self.assertIn("question-drafter", text, name)
+            self.assertIn("5 concepts", text, name)
+
+
 if __name__ == "__main__":
     unittest.main()
