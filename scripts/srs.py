@@ -12,10 +12,12 @@ Standard library only. Python 3.8 or later.
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import datetime as dt
 import fnmatch
 import hashlib
+import io
 import json
 import math
 import os
@@ -1526,12 +1528,76 @@ def cmd_record(args):
         raise SrsError(f"{name} is not in today's list.", 2)
     before = rec["phase"]
     interval = int(rec.get("interval") or 0)
+    # The snapshot lets `amend` undo this answer on the same study day; the next record replaces it.
+    snapshot = copy.deepcopy({k: val for k, val in rec.items() if k != "undo"})
     updated = apply_answer(rec, args.result == "pass", v.today, v.sched, name)
     if args.question:
         updated["questions"] = (list(rec.get("questions") or []) + [short(args.question, 200)])[-3:]
+    updated["undo"] = {"day": v.today.isoformat(), "before": snapshot}
     state["concepts"][name] = updated
     save_state(v, state)
     append_log(v, [v.today.isoformat(), name, args.result, before, interval])
+    print(describe_answer(name, before, updated, v.today, v.leech_at))
+
+
+def rewrite_log_result(v: Vault, day: str, name: str, result: str):
+    """Change the result of the last log line of `name` on `day`, leaving every other byte as it was.
+    Returns the result that line had, or None when there is no such line."""
+    path = v.srs / "log.csv"
+    if not path.exists():
+        return None
+    with path.open(encoding="utf-8", newline="") as fh:
+        lines = fh.read().split("\n")
+    for i in range(len(lines) - 1, 0, -1):  # line 0 is the header
+        body = lines[i].rstrip("\r")
+        row = next(csv.reader([body]), [])
+        if len(row) >= 3 and row[0] == day and row[1] == name:
+            previous = row[2]
+            row[2] = result
+            out = io.StringIO()
+            csv.writer(out, lineterminator="").writerow(row)
+            lines[i] = out.getvalue() + lines[i][len(body):]
+            with path.open("w", encoding="utf-8", newline="") as fh:
+                fh.write("\n".join(lines))
+            touch(v, f"{SRS_DIR}/log.csv")
+            return previous
+    return None
+
+
+def cmd_amend(args):
+    """Correct today's answer for a concept, e.g. after the user contests a verdict."""
+    v = open_vault(args)
+    state = load_state(v)
+    name = find_state_name(state, args.concept)
+    if name is None:
+        raise SrsError(f"'{args.concept}' is not in the review schedule.", 2)
+    rec = state["concepts"][name]
+    today = v.today.isoformat()
+    if rec.get("last") != today:
+        raise SrsError(f"{name} was not answered today, so there is nothing to amend. "
+                       "Use srs.py record if it is in today's list.", 2)
+    undo = rec.get("undo")
+    if not isinstance(undo, dict) or undo.get("day") != today or not isinstance(undo.get("before"), dict):
+        raise SrsError(f"{name} has no snapshot from today to restore (it was answered before Recall 0.7.0). "
+                       "Its answer stays as recorded.", 2)
+    registered = None
+    for row in reversed(read_log(v)):
+        if row.get("day") == today and row.get("concept") == name:
+            registered = row.get("result")
+            break
+    if registered is None:
+        raise SrsError(f"{name} has no answer for today in .srs/log.csv, so there is nothing to amend.", 2)
+    if registered == args.result:
+        raise SrsError(f"{name} is already recorded as {args.result} today. "
+                       "Amend it with the other result if the verdict was wrong.", 2)
+    restored = copy.deepcopy(undo["before"])
+    before = restored.get("phase")
+    updated = apply_answer(restored, args.result == "pass", v.today, v.sched, name)
+    updated["questions"] = list(rec.get("questions") or [])  # as they were after the record
+    updated["undo"] = {"day": today, "before": undo["before"]}  # amending again starts from the same snapshot
+    state["concepts"][name] = updated
+    save_state(v, state)
+    rewrite_log_result(v, today, name, args.result)
     print(describe_answer(name, before, updated, v.today, v.leech_at))
 
 
@@ -2240,6 +2306,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("result", choices=["pass", "fail"])
     p.add_argument("--question", help="the question asked, in a few plain words")
     p.set_defaults(func=cmd_record)
+    p = sub.add_parser("amend", help="correct today's answer for a concept (a contested verdict)")
+    p.add_argument("concept")
+    p.add_argument("result", choices=["pass", "fail"])
+    p.set_defaults(func=cmd_amend)
     sub.add_parser("today", help="today's score").set_defaults(func=cmd_today)
     p = sub.add_parser("add", help="queue concepts for review")
     p.add_argument("--source", choices=["integrate", "promote"], required=True)

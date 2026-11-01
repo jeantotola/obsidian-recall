@@ -657,6 +657,191 @@ class ReviewFlowTest(VaultCase):
         self.assertEqual(state["concepts"], {})
 
 
+class AmendTest(VaultCase):
+    """srs.py amend: correct a contested answer on the same study day."""
+
+    TODAY = "2026-01-10"
+    NAME = "Eigenvectors"
+
+    def setUp(self):
+        super().setUp()
+        self.index("## [[Eigendecomposition]]\n- Eigenvectors\n\n## [[Bayes]]\n- Bayes' theorem\n")
+        self.srs("begin", "setup")
+        self.srs("end")
+
+    def use(self, algorithm, concepts):
+        path = self.vault / ".srs/config.json"
+        config = json.loads(path.read_text())
+        config.setdefault("scheduling", {})["algorithm"] = algorithm
+        path.write_text(json.dumps(config))
+        state = {"version": 1, "next_order": 9, "concepts": concepts, "flags": {"thin": {}}}
+        (self.vault / ".srs/state.json").write_text(json.dumps(state))
+        (self.vault / ".srs/log.csv").unlink(missing_ok=True)
+
+    def state(self, name=None):
+        data = json.loads((self.vault / ".srs/state.json").read_text())
+        return data["concepts"][name or self.NAME]
+
+    def log_bytes(self):
+        return (self.vault / ".srs/log.csv").read_bytes()
+
+    def evolve(self, phase, hold=False, algorithm="anki"):
+        """A record in the given phase, built with the real algorithm, and due today."""
+        rec = srs.new_record("integrate", D("2026-01-01"), 1)
+        answers = {"new": [], "learning": [False], "review": [True, True, True],
+                   "relearning": [True, True, True, False]}[phase]
+        day = D("2026-01-02")
+        for passed in answers:
+            rec = srs.apply_answer(rec, passed, day, sched(algorithm), self.NAME)
+            day = srs.parse_day(rec["due"])
+        self.assertEqual(rec["phase"], phase)
+        if hold:
+            rec = srs.apply_update(rec, D("2026-01-09"), "new part")
+            self.assertTrue(rec["hold"])
+        if phase != "new":
+            rec["due"] = self.TODAY
+        rec["questions"] = ["old one", "old two"]
+        return rec
+
+    def test_flip_matches_recording_the_other_result_directly(self):
+        cases = [("new", False), ("learning", False), ("review", False), ("relearning", False), ("review", True)]
+        for algorithm in ("anki", "thirds"):
+            for phase, hold in cases:
+                for first, second in (("pass", "fail"), ("fail", "pass")):
+                    with self.subTest(algorithm=algorithm, phase=phase, hold=hold, first=first):
+                        rec = self.evolve(phase, hold, algorithm)
+                        self.use(algorithm, {self.NAME: rec})
+                        (self.vault / ".srs/log.csv").unlink(missing_ok=True)
+                        self.srs("record", self.NAME, second, "--question", "direct", today=self.TODAY)
+                        direct = self.state()
+                        direct_log = self.log_bytes()
+                        self.use(algorithm, {self.NAME: rec})
+                        (self.vault / ".srs/log.csv").unlink(missing_ok=True)
+                        self.srs("record", self.NAME, first, "--question", "direct", today=self.TODAY)
+                        out = self.srs("amend", self.NAME, second, today=self.TODAY).stdout
+                        self.assertEqual(self.state(), direct)
+                        self.assertEqual(self.log_bytes(), direct_log)
+                        self.assertEqual(self.state()["questions"], ["old one", "old two", "direct"])
+                        self.assertIn(self.NAME, out)
+
+    def test_amending_twice_works_from_the_snapshot(self):
+        for algorithm in ("anki", "thirds"):
+            with self.subTest(algorithm=algorithm):
+                self.use(algorithm, {self.NAME: self.evolve("review", algorithm=algorithm)})
+                self.srs("record", self.NAME, "fail", today=self.TODAY)
+                failed, failed_log = self.state(), self.log_bytes()
+                self.srs("amend", self.NAME, "pass", today=self.TODAY)
+                passed = self.state()
+                self.assertNotEqual(passed["due"], failed["due"])
+                self.srs("amend", self.NAME, "fail", today=self.TODAY)
+                self.assertEqual(self.state(), failed)
+                self.assertEqual(self.log_bytes(), failed_log)
+                self.srs("amend", self.NAME, "pass", today=self.TODAY)
+                self.assertEqual(self.state(), passed)
+
+    def test_lapses_and_leech_return_to_what_they_were(self):
+        for algorithm in ("anki", "thirds"):
+            with self.subTest(algorithm=algorithm):
+                rec = self.evolve("review", algorithm=algorithm)
+                threshold = 8 if algorithm == "anki" else 10
+                rec["lapses"] = threshold - 1
+                self.use(algorithm, {self.NAME: rec})
+                out = self.srs("record", self.NAME, "fail", today=self.TODAY).stdout
+                self.assertIn("LEECH", out)
+                self.assertEqual(self.state()["lapses"], threshold)
+                out = self.srs("amend", self.NAME, "pass", today=self.TODAY).stdout
+                self.assertNotIn("LEECH", out)
+                self.assertEqual(self.state()["lapses"], threshold - 1)
+                self.assertEqual(self.state()["phase"], "review")
+                self.assertIn("Score: 1/1", self.srs("today", today=self.TODAY).stdout)
+                out = self.srs("amend", self.NAME, "fail", today=self.TODAY).stdout
+                self.assertIn("LEECH", out)
+                self.assertIn("Leeches: Eigenvectors", self.srs("today", today=self.TODAY).stdout)
+
+    def test_refusals_say_what_to_do(self):
+        self.use("anki", {self.NAME: self.evolve("review")})
+        refused = self.srs("amend", self.NAME, "pass", today=self.TODAY, check=False)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("not answered today", refused.stderr)
+        self.assertIn("srs.py record", refused.stderr)
+        unknown = self.srs("amend", "Nope", "pass", today=self.TODAY, check=False)
+        self.assertEqual(unknown.returncode, 2)
+        self.srs("record", self.NAME, "pass", today=self.TODAY)
+        before = (self.state(), self.log_bytes())
+        same = self.srs("amend", self.NAME, "pass", today=self.TODAY, check=False)
+        self.assertEqual(same.returncode, 2)
+        self.assertIn("already recorded as pass", same.stderr)
+        self.assertEqual((self.state(), self.log_bytes()), before)
+        # the next study day, the answer is no longer today's
+        later = self.srs("amend", self.NAME, "fail", today="2026-01-11", check=False)
+        self.assertEqual(later.returncode, 2)
+        self.assertIn("not answered today", later.stderr)
+
+    def test_snapshot_from_another_day_is_ignored(self):
+        self.use("anki", {self.NAME: self.evolve("review")})
+        self.srs("record", self.NAME, "pass", today=self.TODAY)
+        path = self.vault / ".srs/state.json"
+        data = json.loads(path.read_text())
+        data["concepts"][self.NAME]["undo"]["day"] = "2026-01-09"
+        path.write_text(json.dumps(data))
+        before = (self.state(), self.log_bytes())
+        refused = self.srs("amend", self.NAME, "fail", today=self.TODAY, check=False)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("no snapshot from today", refused.stderr)
+        del data["concepts"][self.NAME]["undo"]  # an answer from before 0.7.0
+        path.write_text(json.dumps(data))
+        refused = self.srs("amend", self.NAME, "fail", today=self.TODAY, check=False)
+        self.assertEqual(refused.returncode, 2)
+        self.assertEqual(self.log_bytes(), before[1])
+
+    def test_next_record_replaces_the_snapshot(self):
+        self.use("anki", {self.NAME: self.evolve("review")})
+        self.srs("record", self.NAME, "pass", today=self.TODAY)
+        first = self.state()["undo"]
+        later = "2026-02-20"
+        self.srs("record", self.NAME, "fail", today=later)
+        undo = self.state()["undo"]
+        self.assertEqual(undo["day"], later)
+        self.assertEqual(undo["before"]["last"], self.TODAY)
+        self.assertNotIn("undo", undo["before"])
+        self.assertNotEqual(undo, first)
+
+    def test_only_the_right_log_line_changes(self):
+        rec = self.evolve("review")
+        other = self.evolve("review")
+        self.use("anki", {self.NAME: rec, "Bayes' theorem": other})
+        self.srs("record", "Bayes' theorem", "pass", today=self.TODAY)
+        self.srs("record", self.NAME, "pass", today=self.TODAY)
+        lines = self.log_bytes().split(b"\r\n")
+        self.srs("amend", self.NAME, "fail", today=self.TODAY)
+        after = self.log_bytes().split(b"\r\n")
+        self.assertEqual(len(after), len(lines))
+        changed = [i for i, (a, b) in enumerate(zip(lines, after)) if a != b]
+        self.assertEqual(len(changed), 1)
+        old, new = lines[changed[0]].split(b","), after[changed[0]].split(b",")
+        self.assertEqual(old[:2] + old[3:], new[:2] + new[3:])
+        self.assertEqual((old[2], new[2]), (b"pass", b"fail"))
+        self.assertEqual(self.state("Bayes' theorem")["phase"], "review")
+
+    def test_marks_state_and_log_as_touched(self):
+        self.use("anki", {self.NAME: self.evolve("review")})
+        self.srs("begin", "quiz", today=self.TODAY)
+        self.srs("record", self.NAME, "fail", today=self.TODAY)
+        self.srs("commit", "-m", "quiz: 0/1", today=self.TODAY)
+        self.assertEqual(json.loads((self.vault / ".srs/session.json").read_text())["touched"], [])
+        self.srs("amend", self.NAME, "pass", today=self.TODAY)
+        touched = json.loads((self.vault / ".srs/session.json").read_text())["touched"]
+        self.assertEqual(sorted(touched), [".srs/log.csv", ".srs/state.json"])
+        self.srs("commit", "-m", "quiz: 1/1", today=self.TODAY)
+        self.srs("end", today=self.TODAY)
+
+    def test_quiz_skill_tells_how_to_contest(self):
+        skill = (ROOT / "skills/quiz/SKILL.md").read_text()
+        self.assertIn('srs.py amend "<Concept>" pass', skill)
+        self.assertIn("leaves the repeat at the end of the session", skill)
+        self.assertIn("pass", self.srs("amend", "--help").stdout)
+
+
 class ChecksTest(VaultCase):
     def test_checks_seals_and_exclusions(self):
         self.index("\n".join([

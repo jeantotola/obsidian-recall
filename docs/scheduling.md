@@ -26,6 +26,8 @@ Each concept stores one date, the study day from which it is due, and stays due 
 
 **One answer a day.** The script records one answer per concept per study day. `/quiz` asks failed concepts again at the end of the session, but those repeats are practice and aren't recorded.
 
+**Amending an answer.** `srs.py record` keeps, in the concept's record, a snapshot of the record as it was before the answer, with the study day (the next `record` replaces it). `srs.py amend "<Concept>" pass|fail` is for a verdict the user contests. It works only for a concept answered today, whose snapshot is from today, and only with a result different from the recorded one; otherwise it refuses and says what to do. It restores the snapshot, applies the configured algorithm again with the new result (a hold, lapses and leeches come back as they were), keeps the recent questions as they were after the record, and changes only the result on today's line of `log.csv`. Amending again always starts from the same snapshot, so fail → pass → fail works. From the next study day on, the answer is final.
+
 **Graduation.** The first pass of a new or learning concept moves it to review; with the default parameters it comes back the next day. A fail sends it to learning, back the next day.
 
 **Late reviews.** When a concept is answered after its due date, a pass counts half the delay. Both algorithms reach the same base: `interval + days_late / 2`. A 10-day interval answered 10 days late grows from 15 days instead of 10.

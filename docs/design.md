@@ -70,7 +70,7 @@ A concept is **new** (queued, never asked), **learning** (failed before its firs
 
 **Study day.** The day starts at 4 a.m. by default, so a session after midnight counts as the previous day. A concept that enters the queue becomes eligible on the next study day, so it is never asked on the day you integrated it.
 
-**Within a session.** A failed concept is asked again at the end of the session with a different question. That repeat isn't recorded; the script refuses a second answer for the same concept on the same day.
+**Within a session.** A failed concept is asked again at the end of the session with a different question. That repeat isn't recorded; the script refuses a second answer for the same concept on the same day. The one way to change an answer is `srs.py amend`, for a verdict you contest (see below).
 
 **New content.** When `/integrate` adds content to a concept in review, the concept is put on hold: due the next study day, with a focus line describing the new part. The next question targets the focus; a pass keeps the interval as it was, and a fail is a normal lapse for the algorithm. A concept already in learning or relearning only gets the focus.
 
@@ -93,15 +93,15 @@ In practice, 20 concepts a day sustain about 2 to 3 new concepts per day once th
 
 `.srs/log.csv` has one line per recorded answer: study day, concept, pass or fail, and the phase and interval before the answer. Logs from before 0.5.0 get the interval column on the next answer; their older lines have no interval and count only in the combined rate. About 50 bytes per line, or a few hundred kilobytes per year.
 
-The schedule doesn't depend on the log: the rules use only each concept's current state, which grows with the number of concepts, not with time. The log serves calibration (`srs.py stats`) and a possible future switch to FSRS, and it is the only record that can't be rebuilt later. Only the script reads it; it never enters the model's context. Question texts are not logged; each concept keeps its last three questions in the state, so the next question can take another angle.
+The schedule doesn't depend on the log: the rules use only each concept's current state, which grows with the number of concepts, not with time. The log serves calibration (`srs.py stats`) and a possible future switch to FSRS, and it is the only record that can't be rebuilt later. Only the script reads it; it never enters the model's context. `srs.py amend` rewrites the result on today's line for a contested answer; no other part of the line or of the log changes. Question texts are not logged; each concept keeps its last three questions in the state, so the next question can take another angle.
 
 ## /quiz
 
 1. The script opens a session and the command receives today's list, with each concept's page, focus and recent questions.
 2. For each concept, Claude reads the owner page and asks one question.
-3. You answer. Claude says pass or fail with one line of justification, the expected answer and the page. You may contest, and your word wins.
+3. You answer. Claude says pass or fail with one line of justification, the expected answer and the page. You may contest, and your word wins: Claude runs `srs.py amend` with the result you stand for.
 4. Each answer is recorded with `srs.py record`, which updates the state and the log.
-5. Failed concepts are asked again at the end, from another angle, without recording.
+5. Failed concepts are asked again at the end, from another angle, without recording. A concept whose verdict you contested leaves this repeat if it is amended to pass, and joins it if it is amended to fail.
 6. At the end: the score, leeches and thin pages, and a commit such as `quiz: 17/20`.
 
 Question rules, editable in `.srs/quiz-rules.md`:

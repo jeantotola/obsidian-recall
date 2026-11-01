@@ -25,7 +25,7 @@ The block above comes from Recall's script. Call the script as `python3 ${CLAUDE
 2. For each concept in today's list, in order:
    1. Read its page and find what the page says about the concept.
    2. Ask one question, following the quiz rules, with the count first ("3/14"). Wait for the answer.
-   3. Judge it as the quiz rules say. If the user contests, their word wins.
+   3. Judge it as the quiz rules say. If the user contests, their word wins (see Contesting a verdict).
    4. Run `srs.py record "<Concept>" pass` or `fail`, adding `--question "<the question in at most 15 plain words>"` with no quotes, backticks or dollar signs inside. Mention its output only when it reports a leech.
    5. If the page is too thin for a good question, ask what it allows and run `srs.py flag "<page path>"`.
    Skip a concept whose page line says to skip it, and tell the user.
@@ -35,5 +35,9 @@ The block above comes from Recall's script. Call the script as `python3 ${CLAUDE
 4. Run `srs.py today`. Tell the user the score, any leeches (the concept may be too broad or its page confusing: suggest /maintenance) and any page you flagged, in two or three lines.
 
 5. Run `srs.py commit -m "quiz: <score>"` with the score from `srs.py today`, then `srs.py end`.
+
+## Contesting a verdict
+
+When the user contests a verdict, at any moment of the session, run `srs.py amend "<Concept>" pass` or `fail` with the result they stand for, and confirm in one line. A concept amended to pass leaves the repeat at the end of the session; amended to fail, it joins it. The score still comes from `srs.py today`. If amend refuses, tell the user what it says.
 
 If the user stops early, go to step 4 with what was answered.

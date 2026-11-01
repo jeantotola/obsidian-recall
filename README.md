@@ -131,6 +131,7 @@ Both share the rest:
 - With no lapses, both give about 1, 3, 8, 20, 50, 125 and 313 days.
 - A late review counts half the delay: a 10-day interval answered 10 days late grows from 15 days instead of 10.
 - A failed concept comes back the next day. The same-day repeat in `/quiz` is practice and isn't recorded.
+- A contested verdict is corrected with `srs.py amend "<Concept>" pass|fail`, on the same study day only. The concept goes back to how it was before the answer and the answer is applied again with the new result; the next day, the answer is final.
 - New content for a concept in review brings it back the next day with a question on the new part. A pass keeps the interval; a fail is a normal lapse.
 - Up to 20 concepts a day: learning, relearning and updated concepts first, then reviews (most overdue first), then new concepts, at most 5 a day and only if there is room.
 - A new concept waits until the next day. The study day starts at 4 a.m., so a late-night session counts as the same day.
@@ -236,7 +237,7 @@ obsidian-recall/
 ## How the pieces fit
 
 - **The script decides.** `srs.py` computes every date and the daily list, checks the index, parses the inbox and runs git. Each command injects its output before Claude reads the command, so the daily list arrives ready.
-- **Claude writes, asks and judges.** It integrates your notes, asks questions from each concept's page, and judges answers strictly. You can contest a verdict.
+- **Claude writes, asks and judges.** It integrates your notes, asks questions from each concept's page, and judges answers strictly. You can contest a verdict: if you do, Claude runs `srs.py amend` and the answer is corrected on the spot, in the schedule and in the log.
 - **The hook keeps both in their lanes.** It blocks direct edits to `.srs/`, lets Claude edit notes without prompts only while a command is open (recording each file for the diff), and lets the plugin's own script run without permission prompts. Because the review is the git diff, it works the same in every permission mode.
 - **Cheap agents read in bulk.** Indexing and auditing pages run in Haiku subagents that can only read.
 
