@@ -128,13 +128,14 @@ Diary-style files (entries by date rather than by concept) are indexed like any 
 
 ## /maintenance
 
-1. `srs.py check` runs the deterministic checks on indexed pages: pages over the size limit (6,000 characters by default), concept names used on more than one page, descriptions over the limit, index links that don't resolve, index lines that can't be parsed, orphans (scheduled concepts missing from the index), pages that aren't in the index, pages without a valid seal, pages flagged as thin, and leeches.
+1. `srs.py check` runs the deterministic checks on indexed pages: pages over the size limit (6,000 characters by default), concept names used on more than one page, descriptions over the limit, index links that don't resolve, index lines that can't be parsed, orphans (scheduled concepts missing from the index), pages that aren't in the index, pages without a valid seal, stale seals (files that are gone or are no longer pages), pages flagged as thin, and leeches.
 2. A Haiku subagent with read-only tools audits up to 20 unsealed pages per run. For each page it judges: (A) every listed concept is explained on the page; (B) the page doesn't explain an important concept missing from its entry and not owned elsewhere; (C) none of its concepts duplicates another page's concept under a different name.
-3. Pages that pass get a seal from `srs.py verify`, which refuses pages over the size limit or with names used elsewhere.
+3. Pages that pass get a seal from `srs.py verify`, which refuses pages over the size limit or with names used elsewhere. Before the audit, `srs.py prune-seals` removes the stale seals, always and without asking, inside the session. The count goes in the commit message and the report.
 4. The report lists failures with reasons, leeches, thin pages and unindexed pages.
-5. Nothing is fixed automatically. Splitting a page, merging concepts or renaming goes through the main agent, as an edit you approve by diff.
+5. Nothing else is fixed automatically. Splitting a page, merging concepts or renaming goes through the main agent, as an edit you approve by diff.
+6. When the batch is empty and no seal was removed, the session ends without a commit. `srs.py commit` with nothing to commit prints "Nothing to commit." and exits 0.
 
-**Seals are hashes.** A seal stores the git blob hash of the page and a hash of its index entry. Any change to either, through Recall or by hand in Obsidian, breaks the seal without anyone having to remember to remove it. The global duplicate check (criterion C) can still skip sealed pages safely: every new duplicate enters through a changed page, which has already lost its seal. When a duplicate is found, both pages stay unsealed until it is fixed.
+**Seals are hashes.** A seal stores the git blob hash of the page and a hash of its index entry. Any change to either, through Recall or by hand in Obsidian, breaks the seal without anyone having to remember to remove it. The global duplicate check (criterion C) can still skip sealed pages safely: every new duplicate enters through a changed page, which has already lost its seal. When a duplicate is found, both pages stay unsealed until it is fixed. A seal outlives its page when the page is deleted, renamed, moved or excluded; `srs.py check` reports those entries and `srs.py prune-seals` removes them.
 
 Leeches are where the review and the vault meet: a concept that keeps failing points to a page to split or rewrite.
 
@@ -148,7 +149,7 @@ Each later run indexes one batch of pages (20 by default) with a Haiku subagent 
 
 Git is the review mechanism, the history and the safety net.
 
-- **Review by diff.** During a command, Claude writes its proposal directly into the files. `srs.py diff` shows the change, and only your approval turns it into a commit; rejecting restores the files through git.
+- **Review by diff.** During a command, Claude writes its proposal directly into the files. `srs.py diff` shows the change, and only your approval turns it into a commit; rejecting restores the files through git. When the session changed the index, `srs.py diff` first runs the index checks of `srs.py check` on the lines added or altered since HEAD (description over the limit, repeated concept name against the whole index, link that doesn't resolve, line not understood) and prints the warnings before the diff. They are warnings, not refusals: the commit stays allowed, and the commands tell Claude to fix them before asking for approval.
 - **One commit per operation.** Content, index and state go in together, with a prefix: `integrate:`, `quiz:`, `promote:`, `setup:` or `maintenance:`.
 - **Your manual edits.** What you change in Obsidian is committed as `vault: manual edits` at the start of the next command, so each Recall commit holds only what that command did.
 - **Sessions.** `.srs/session.json`, which is never committed, records the command in progress and every file written during it: by Claude (through the hook) and by the script. A commit includes only those files. Edits you make in parallel wait for the next `vault: manual edits`.

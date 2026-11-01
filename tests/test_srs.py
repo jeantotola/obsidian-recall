@@ -716,6 +716,150 @@ class ChecksTest(VaultCase):
         self.assertNotIn("Math/Bayes.md", batch)
 
 
+class DiffWarningsTest(VaultCase):
+    BASE = "## [[Eigendecomposition]]\n- Eigenvectors\n\n## [[Bayes]]\n- Bayes' theorem\n"
+
+    def committed_index(self, body=None):
+        self.index(body or self.BASE)
+        self.srs("begin", "setup")  # commits the manual edit, so the index is in HEAD
+        self.srs("end")
+
+    def edit_index(self, body):
+        self.srs("begin", "maintenance")
+        self.edit_via_hook("index.md", "# Index\n\n" + body)
+
+    def test_warns_about_a_long_description_added_in_the_session(self):
+        self.committed_index()
+        self.edit_index(self.BASE + "- Bayes factor — " + "x" * 70 + "\n")
+        out = self.srs("diff").stdout
+        self.assertIn("Index warnings", out)
+        self.assertIn("Descriptions over 60 characters: 1", out)
+        self.assertIn("Bayes factor (70 characters)", out)
+        self.assertLess(out.index("Index warnings"), out.index("diff --git"))
+        self.srs("commit", "-m", "maintenance: long description")  # a warning, not a refusal
+        self.srs("end")
+
+    def test_ignores_problems_on_lines_the_session_did_not_touch(self):
+        self.committed_index(self.BASE + "- Bayes factor — " + "x" * 70 + "\n")
+        self.edit_index(self.BASE + "- Bayes factor — " + "x" * 70 + "\n- Likelihood\n")
+        out = self.srs("diff").stdout
+        self.assertNotIn("Index warnings", out)
+        self.assertIn("+- Likelihood", out)
+        self.srs("abort")
+
+    def test_warns_about_a_name_repeated_against_an_unchanged_line(self):
+        self.committed_index()
+        self.edit_index(self.BASE.replace("- Bayes' theorem", "- Bayes' theorem\n- Eigenvectors"))
+        out = self.srs("diff").stdout
+        self.assertIn("Concept names used on more than one page: 1", out)
+        self.assertIn("Eigenvectors: [[Eigendecomposition]], [[Bayes]]", out)
+        self.srs("abort")
+
+    def test_warns_about_a_link_that_does_not_resolve_and_a_line_not_understood(self):
+        self.committed_index()
+        self.edit_index(self.BASE + "\n## [[Ghost page]]\n- Ghost\nstray text\n")
+        out = self.srs("diff").stdout
+        self.assertIn("Index links that don't resolve: 1", out)
+        self.assertIn("[[Ghost page]]", out)
+        self.assertIn("Index lines not understood: 1", out)
+        self.assertIn("stray text", out)
+        self.srs("abort")
+
+    def test_a_new_index_is_checked_whole(self):
+        self.srs("begin", "setup")
+        self.edit_via_hook("index.md", "# Index\n\n" + self.BASE + "- Bayes factor — " + "x" * 70 + "\n")
+        self.assertIn("Descriptions over 60 characters: 1", self.srs("diff").stdout)
+        self.srs("abort")
+
+    def test_no_warning_section_when_the_index_is_clean_or_unchanged(self):
+        self.committed_index()
+        self.edit_index(self.BASE + "- Likelihood\n")
+        self.assertNotIn("Index warnings", self.srs("diff").stdout)
+        self.srs("discard")
+        self.edit_via_hook("Math/Bayes.md", "# Bayes\nchanged\n")
+        self.assertNotIn("Index warnings", self.srs("diff").stdout)
+        self.srs("abort")
+
+    def test_check_still_reports_everything(self):
+        self.committed_index(self.BASE + "- Bayes factor — " + "x" * 70 + "\n")
+        self.assertIn("Descriptions over 60 characters: 1", self.srs("check").stdout)
+
+
+class StaleSealsTest(VaultCase):
+    INDEX = "## [[Eigendecomposition]]\n- Eigenvectors\n\n## [[Bayes]]\n- Bayes' theorem\n"
+
+    def seals(self):
+        return json.loads((self.vault / ".srs/verified.json").read_text())
+
+    def seal_everything_then_orphan_some(self):
+        self.write("Math/Gone.md", "# Gone\n")
+        self.write("Math/Excluded.md", "# Excluded\n")
+        self.index(self.INDEX + "\n## [[Gone]]\n- Gone concept\n\n## [[Excluded]]\n- Excluded concept\n")
+        self.srs("verify", "Eigendecomposition", "Bayes", "Gone", "Excluded")
+        (self.vault / "Math/Gone.md").unlink()
+        cfg = json.loads((self.vault / ".srs/config.json").read_text())
+        cfg["exclude"].append("Math/Excluded.md")
+        (self.vault / ".srs/config.json").write_text(json.dumps(cfg))
+
+    def test_check_reports_seals_of_missing_and_excluded_files(self):
+        self.seal_everything_then_orphan_some()
+        self.assertEqual(srs_report(self.vault)["stale_seals"], ["Math/Excluded.md", "Math/Gone.md"])
+        out = self.srs("check").stdout
+        self.assertIn("Stale seals", out)
+        self.assertIn("  - Math/Gone.md", out)
+
+    def test_check_reports_seals_of_the_inbox_and_the_index(self):
+        self.index(self.INDEX)
+        (self.vault / ".srs/verified.json").write_text(json.dumps({
+            "inbox.md": {"blob": "x", "entry": "y", "day": "2026-01-10"},
+            "index.md": {"blob": "x", "entry": "y", "day": "2026-01-10"},
+            "Math/Bayes.md": {"blob": "x", "entry": "y", "day": "2026-01-10"}}))
+        self.assertEqual(srs_report(self.vault)["stale_seals"], ["inbox.md", "index.md"])
+
+    def test_check_has_nothing_to_report_when_every_seal_has_a_page(self):
+        self.index(self.INDEX)
+        self.srs("verify", "Bayes")
+        self.assertEqual(srs_report(self.vault)["stale_seals"], [])
+        self.assertIn("Stale seals (", self.srs("check").stdout)
+        self.assertIn("): none", self.srs("check").stdout)
+
+    def test_prune_removes_only_stale_seals_inside_the_session(self):
+        self.seal_everything_then_orphan_some()
+        self.srs("begin", "maintenance")
+        out = self.srs("prune-seals").stdout
+        self.assertIn("Removed 2 stale seals: Math/Excluded.md, Math/Gone.md", out)
+        self.assertEqual(sorted(self.seals()), ["Math/Bayes.md", "Math/Eigendecomposition.md"])
+        self.assertIn(".srs/verified.json", self.srs("diff").stdout)
+        self.srs("commit", "-m", "maintenance: 2 stale seals removed")
+        self.srs("end")
+        self.assertEqual(srs_report(self.vault)["stale_seals"], [])
+
+    def test_prune_with_nothing_stale_changes_nothing(self):
+        self.index(self.INDEX)
+        self.srs("verify", "Bayes")
+        self.srs("begin", "maintenance")
+        before = (self.vault / ".srs/verified.json").read_text()
+        self.assertEqual(self.srs("prune-seals").stdout.strip(), "Removed 0 stale seals: -")
+        self.assertEqual((self.vault / ".srs/verified.json").read_text(), before)
+        self.assertEqual(self.srs("diff").stdout.strip(), "No changes to review.")
+        self.srs("end")
+
+    def test_maintenance_context_lists_the_stale_seals(self):
+        self.seal_everything_then_orphan_some()
+        self.assertIn("  - Math/Gone.md", self.srs("context", "maintenance").stdout)
+
+
+class EmptyCommitTest(VaultCase):
+    def test_commit_with_nothing_to_commit_is_neutral_and_succeeds(self):
+        self.srs("begin", "maintenance")
+        proc = self.srs("commit", "-m", "maintenance: 0 pages verified", check=False)
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout.strip(), "Nothing to commit.")
+        self.assertEqual(proc.stderr, "")
+        self.srs("end")
+        self.assertNotIn("maintenance: 0 pages verified", self.git("log", "--format=%s"))
+
+
 def srs_report(vault):
     config = srs.load_config(vault)
     v = srs.Vault(root=vault, config=config, today=D("2026-01-10"))

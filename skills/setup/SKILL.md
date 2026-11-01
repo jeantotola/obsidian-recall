@@ -36,6 +36,6 @@ Nothing enters the review queue during setup. Each round indexes one batch.
 3. `srs.py begin setup`.
 4. Use the Agent tool with the `recall:index-drafter` agent. Give it the batch paths (from the block, or from `srs.py setup-batch` after the first round), the concept language, the description limit and the index path.
 5. Append its entries to the index file with Edit. Resolve duplicates: when two pages explain the same concept, keep one owner, preferring a page about the concept over a diary-style page, and remove the concept from the other entry.
-6. Run `srs.py diff` and show the user the diff in a ```diff block, with one line on duplicates or skipped pages. Ask: ok, change or stop.
+6. Run `srs.py diff`. If it prints index warnings, fix them and run it again before asking for approval. Show the user the diff in a ```diff block, with one line on duplicates or skipped pages. Ask: ok, change or stop.
 7. On "ok": `srs.py commit -m "setup: index <N> pages"`. On a change request: edit, then show the new diff. On "stop": `srs.py discard`.
 8. Say how many pages are left and ask whether to index the next batch (`srs.py setup-batch` lists it). When the user stops or nothing is left: `srs.py end`.

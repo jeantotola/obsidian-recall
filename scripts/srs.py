@@ -1139,6 +1139,37 @@ def ensure_gitignore(root: Path) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def index_checks(v: Vault, idx: Index, lines=None) -> dict:
+    """The checks that look only at the index: names used twice, long descriptions,
+    links that don't resolve and lines that can't be read. With `lines` (a set of
+    index line numbers), report only what sits on those lines; a repeated name is
+    reported when any of its entries is on them."""
+    limit = v.limits["description_max_chars"]
+
+    def wanted(no: int) -> bool:
+        return lines is None or no in lines
+
+    found = {"duplicates": [], "long_descriptions": [], "link_problems": [],
+             "index_problems": [p for p in idx.problems if wanted(p[0])]}
+    for page in idx.pages:
+        if page.status != "ok" and wanted(page.line):
+            found["link_problems"].append(page)
+        for c in page.concepts:
+            if c.desc and len(c.desc) > limit and wanted(c.line):
+                found["long_descriptions"].append((c.name, len(c.desc)))
+    for key, entries in sorted(idx.by_key().items()):
+        if len(entries) > 1 and any(wanted(e.line) for e in entries):
+            found["duplicates"].append((entries[0].name, [f"[[{e.page.link}]]" for e in entries]))
+    return found
+
+
+def stale_seals(v: Vault, verified: dict) -> list:
+    """Seals whose file is gone or is no longer a content page (excluded by the
+    config, the inbox, the index or a hidden folder)."""
+    pages = set(content_pages(v))
+    return sorted(rel for rel in verified if rel not in pages)
+
+
 def run_checks(v: Vault) -> dict:
     idx, _ = load_index(v)
     state = load_state(v)
@@ -1148,17 +1179,15 @@ def run_checks(v: Vault) -> dict:
     indexed = {p.path for p in idx.pages if p.path}
     report = {
         "over_size": [],
-        "duplicates": [],
-        "long_descriptions": [],
-        "link_problems": [],
-        "index_problems": idx.problems,
         "orphans": [],
         "unindexed": [p for p in pages if p not in indexed],
         "unverified": [],
+        "stale_seals": stale_seals(v, verified),
         "thin": sorted(state["flags"]["thin"].items()),
         "leeches": [],
         "index": idx,
     }
+    report.update(index_checks(v, idx))
     dup_pages = {e.page.path for entries in idx.by_key().values() if len(entries) > 1 for e in entries}
     for page in idx.pages:
         if page.status == "ok":
@@ -1168,14 +1197,6 @@ def run_checks(v: Vault) -> dict:
             # a page that shares a concept name stays unsealed until the duplicate is fixed
             if not seal_ok(v, verified, page) or page.path in dup_pages:
                 report["unverified"].append(page)
-        else:
-            report["link_problems"].append(page)
-        for c in page.concepts:
-            if c.desc and len(c.desc) > limits["description_max_chars"]:
-                report["long_descriptions"].append((c.name, len(c.desc)))
-    for key, entries in sorted(idx.by_key().items()):
-        if len(entries) > 1:
-            report["duplicates"].append((entries[0].name, [f"[[{e.page.link}]]" for e in entries]))
     owners = idx.by_key()
     for name, rec in sorted(state["concepts"].items()):
         if norm_key(name) not in owners:
@@ -1185,21 +1206,10 @@ def run_checks(v: Vault) -> dict:
     return report
 
 
-def format_checks(v: Vault, report: dict) -> list:
-    out = []
+def format_checks(v: Vault, report: dict, only=None) -> list:
+    """The report as lines. With `only` (section keys), print just those sections
+    and leave out the ones with nothing in them."""
     limits = v.limits
-
-    def section(title, items, render):
-        out.append(f"{title}: {len(items) if items else 'none'}")
-        for item in items:
-            out.append(f"  - {render(item)}")
-
-    section(f"Pages over {limits['page_max_chars']} characters", report["over_size"],
-            lambda x: f"{x[0]} ({x[1]} characters)")
-    section("Concept names used on more than one page", report["duplicates"],
-            lambda x: f"{x[0]}: {', '.join(x[1])}")
-    section(f"Descriptions over {limits['description_max_chars']} characters", report["long_descriptions"],
-            lambda x: f"{x[0]} ({x[1]} characters)")
 
     def link_line(page):
         if page.status == "missing":
@@ -1208,13 +1218,30 @@ def format_checks(v: Vault, report: dict) -> list:
             return f"[[{page.link}]] (index line {page.line}): ambiguous, use the path: {', '.join(page.candidates)}"
         return f"[[{page.link}]] (index line {page.line}): points to an excluded file ({page.path})"
 
-    section("Index links that don't resolve", report["link_problems"], link_line)
-    section("Index lines not understood", report["index_problems"], lambda x: f"line {x[0]}: {x[1]}")
-    section("Concepts in review but not in the index (orphans)", report["orphans"], lambda x: x)
-    section("Pages not in the index (index them with /setup)", report["unindexed"], lambda x: x)
-    section("Indexed pages without a valid seal", report["unverified"], lambda p: p.path)
-    section("Pages flagged as thin by /quiz", report["thin"], lambda x: f"{x[0]} (flagged {x[1]})")
-    section(f"Leeches ({v.leech_at}+ lapses)", report["leeches"], lambda x: f"{x[0]} ({x[1]} lapses)")
+    sections = [
+        ("over_size", f"Pages over {limits['page_max_chars']} characters", lambda x: f"{x[0]} ({x[1]} characters)"),
+        ("duplicates", "Concept names used on more than one page", lambda x: f"{x[0]}: {', '.join(x[1])}"),
+        ("long_descriptions", f"Descriptions over {limits['description_max_chars']} characters",
+         lambda x: f"{x[0]} ({x[1]} characters)"),
+        ("link_problems", "Index links that don't resolve", link_line),
+        ("index_problems", "Index lines not understood", lambda x: f"line {x[0]}: {x[1]}"),
+        ("orphans", "Concepts in review but not in the index (orphans)", lambda x: x),
+        ("unindexed", "Pages not in the index (index them with /setup)", lambda x: x),
+        ("unverified", "Indexed pages without a valid seal", lambda p: p.path),
+        ("stale_seals", "Stale seals (the file is gone or is no longer a page; /maintenance removes them)", lambda x: x),
+        ("thin", "Pages flagged as thin by /quiz", lambda x: f"{x[0]} (flagged {x[1]})"),
+        ("leeches", f"Leeches ({v.leech_at}+ lapses)", lambda x: f"{x[0]} ({x[1]} lapses)"),
+    ]
+    out = []
+    for key, title, render in sections:
+        if only is not None and key not in only:
+            continue
+        items = report[key]
+        if only is not None and not items:
+            continue
+        out.append(f"{title}: {len(items) if items else 'none'}")
+        for item in items:
+            out.append(f"  - {render(item)}")
     return out
 
 
@@ -1317,6 +1344,32 @@ def cmd_begin(args):
     print(f"Session open for /{args.command}.{note}")
 
 
+HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.M)
+
+
+def changed_index_lines(v: Vault, new_file: bool) -> set:
+    """Line numbers of the index that the session added or altered since HEAD."""
+    if new_file:
+        return set(range(1, len(read_text(v.root / v.index_rel).splitlines()) + 1))
+    out = git(["diff", "HEAD", "-U0", "--no-color", "--", v.index_rel], v.root).stdout
+    lines = set()
+    for m in HUNK_RE.finditer(out):
+        start = int(m.group(1))
+        count = int(m.group(2)) if m.group(2) is not None else 1
+        lines.update(range(start, start + count))
+    return lines
+
+
+def index_warnings(v: Vault, new_file: bool) -> list:
+    """Index problems on the lines the session changed, checked against the whole index."""
+    idx, _ = load_index(v)
+    found = index_checks(v, idx, changed_index_lines(v, new_file))
+    lines = format_checks(v, found, only=list(found))
+    if lines:
+        lines.insert(0, "Index warnings: fix these before asking the user to approve (the commit is still allowed).")
+    return lines
+
+
 def cmd_diff(args):
     v = open_vault(args)
     repo = require_repo(v)
@@ -1331,6 +1384,10 @@ def cmd_diff(args):
     tracked = [p for p in content if changed[p] != "??"]
     untracked = [p for p in content if changed[p] == "??"]
     chunks = []
+    if v.index_rel in content:
+        warnings = index_warnings(v, changed[v.index_rel] == "??")
+        if warnings:
+            chunks += warnings + [""]
     if tracked:
         chunks.append(git(["diff", "HEAD", "--stat", "--"] + tracked, v.root).stdout.rstrip())
     for p in untracked:
@@ -1709,6 +1766,18 @@ def cmd_unseal(args):
         write_json(v.srs / "verified.json", verified)
         touch(v, f"{SRS_DIR}/verified.json")
     print(f"Unsealed {len(removed)}: {', '.join(removed) or '-'}")
+
+
+def cmd_prune_seals(args):
+    v = open_vault(args)
+    verified = load_verified(v)
+    stale = stale_seals(v, verified)
+    for rel in stale:
+        del verified[rel]
+    if stale:
+        write_json(v.srs / "verified.json", verified)
+        touch(v, f"{SRS_DIR}/verified.json")
+    print(f"Removed {plural(len(stale), 'stale seal')}: {', '.join(stale) or '-'}")
 
 
 def cmd_inbox(args):
@@ -2202,6 +2271,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("unseal", help="remove seals, e.g. from the other page of a duplicate")
     p.add_argument("pages", nargs="+")
     p.set_defaults(func=cmd_unseal)
+    sub.add_parser("prune-seals", help="remove seals of files that are gone or no longer pages").set_defaults(
+        func=cmd_prune_seals)
     p = sub.add_parser("inbox", help="list, show or remove inbox blocks")
     p.add_argument("action", choices=["list", "show", "remove"])
     p.add_argument("ids", nargs="*")

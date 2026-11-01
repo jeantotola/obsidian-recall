@@ -2,7 +2,7 @@
 
 **A git-native study system for Obsidian.**
 
-You write what you learn in one inbox page. At the end of a study session, `/integrate` moves it into your vault's pages, block by block, and shows each change as a git diff for you to approve. An index records the concepts each page explains, and `/quiz` asks you up to 20 questions a day on those concepts, scheduled by spaced repetition (Anki's classic algorithm by default, and every number adjustable). A small Python script does the scheduling and all the git work; Claude writes, asks and judges; you approve.
+You write what you learn in one inbox page. At the end of a study session, `/integrate` moves it into your vault's pages, block by block, and shows each change as a git diff for you to approve. When the session changed the index, the diff starts with warnings about the lines it added or altered: a description over the limit, a repeated concept name, a link that doesn't resolve or a line that can't be read. They warn; they don't block the commit. An index records the concepts each page explains, and `/quiz` asks you up to 20 questions a day on those concepts, scheduled by spaced repetition (Anki's classic algorithm by default, and every number adjustable). A small Python script does the scheduling and all the git work; Claude writes, asks and judges; you approve.
 
 - **Your words stay yours.** Claude moves and links what you wrote, and marks anything it adds.
 - **Git is the backbone.** Each operation is one commit, so `git log` reads like a study journal and `git revert` undoes.
@@ -21,7 +21,7 @@ flowchart LR
 - **Inbox.** One page you write in every day, one block per subject.
 - **Index.** For each page, the concepts that page explains. It is how Claude finds where new notes belong without reading the whole vault, and the list of what can be quizzed.
 - **Review schedule.** The concepts you chose to remember, each with the date from which it is due. The script computes every date; the model never does.
-- **Seals.** `/maintenance` checks pages against the index and seals the ones that pass. Any change to a page breaks its seal.
+- **Seals.** `/maintenance` checks pages against the index and seals the ones that pass. Any change to a page breaks its seal, and the seal of a page that was deleted, renamed or excluded is removed automatically.
 
 ## Requirements
 
@@ -56,7 +56,7 @@ Choose the **project** scope, so Recall's commands and hook load only in this va
 | `/integrate [n \| file]` | After studying | Plans where the inbox blocks go, then moves them into your pages with one diff and one commit per block. Ends with one question: which concepts go into review. |
 | `/quiz` | Every day | Up to 20 questions on the concepts that are due. Answer in your own words. |
 | `/promote [page or topic]` | When you have time | Moves concepts that are only in the index into the review schedule. |
-| `/maintenance` | Now and then | Checks the index and the pages, audits unsealed pages, and seals the ones that pass. |
+| `/maintenance` | Now and then | Checks the index and the pages, audits unsealed pages, seals the ones that pass, and removes the seals of pages that no longer exist. |
 | `/setup` | Once, then until indexed | Configures the vault and indexes existing pages. |
 
 Commands work by their short name when nothing else uses it; otherwise type `/recall:quiz` and so on.
@@ -91,7 +91,7 @@ The heading level is configurable, and headings inside code blocks don't count. 
 | `integrate: queue N concepts` | `/integrate`, after the review question |
 | `quiz: 17/20` | `/quiz`, at the end |
 | `promote: N concepts` | `/promote` |
-| `maintenance: N pages verified` | `/maintenance` |
+| `maintenance: N pages verified` | `/maintenance` (with `, M stale seals removed` when it removed seals; with nothing to change it makes no commit) |
 | `setup: ...` | `/setup` |
 
 Undo the last operation with `git revert HEAD`: content, index and schedule go back together.
