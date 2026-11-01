@@ -1042,70 +1042,44 @@ class IntegrateOrderTest(unittest.TestCase):
         self.assertIn("Never move or rewrite the text already on the page", skill)
 
 
-class QuizPrefetchTest(unittest.TestCase):
-    """/quiz prepares questions with a read-only question-drafter, and the docs say so."""
+class QuizAsksItselfTest(unittest.TestCase):
+    """/quiz asks every question itself, from the owner page; no subagent drafts them."""
 
-    def frontmatter(self, path):
-        text = (ROOT / path).read_text()
-        self.assertTrue(text.startswith("---\n"), path)
-        head = text.split("---\n", 2)[1]
-        return dict(line.split(": ", 1) for line in head.splitlines() if ": " in line)
+    def test_no_question_drafter_anywhere(self):
+        self.assertFalse((ROOT / "agents/question-drafter.md").exists())
+        self.assertEqual(
+            sorted(p.name for p in (ROOT / "agents").iterdir()),
+            ["index-drafter.md", "page-auditor.md"],
+        )
+        for path in ("skills", "agents", "hooks", "docs", "README.md", "rules.md", "scripts"):
+            target = ROOT / path
+            files = [target] if target.is_file() else [
+                f for f in target.rglob("*") if f.is_file() and f.suffix in (".md", ".py", ".json")
+            ]
+            for f in files:
+                self.assertNotIn("question-drafter", f.read_text(), str(f))
 
-    def test_drafter_is_read_only_and_inherits_the_model(self):
-        meta = self.frontmatter("agents/question-drafter.md")
-        self.assertEqual(meta["name"], "question-drafter")
-        self.assertEqual(meta["model"], "inherit")
-        self.assertEqual({t.strip() for t in meta["tools"].split(",")}, {"Read", "Glob", "Grep"})
-
-    def test_drafter_returns_what_the_quiz_needs(self):
-        text = (ROOT / "agents/question-drafter.md").read_text()
-        for field in ("CONCEPT:", "QUESTION:", "SECOND:", "ANSWER:", "THIN:"):
-            self.assertIn(field, text)
-        self.assertIn("quiz-rules.md", text)
-        self.assertIn("give away", text)
-
-    def test_quiz_skill_launches_batches_in_the_background(self):
+    def test_quiz_skill_reads_the_page_and_asks_each_question(self):
         skill = (ROOT / "skills/quiz/SKILL.md").read_text()
-        self.assertIn("recall:question-drafter", skill)
-        self.assertIn("run_in_background", skill)
-        self.assertIn("two batches", skill)
-        self.assertIn("concepts 2 to 4 of the list", skill)
-        self.assertIn("all the rest", skill)
-        self.assertNotIn("up to 5 concepts", skill)
-        self.assertIn("same owner page always go in the same batch", skill)
-        self.assertIn("joins the first batch", skill)
-        self.assertIn("Leave concept 1 out", skill)
-        self.assertIn("write nothing to the user", skill)
-        self.assertIn("Read the page only if the user contests", skill)
-        self.assertIn("srs.py flag", skill)
-
-    def test_quiz_skill_is_silent_when_a_drafter_reports(self):
-        skill = (ROOT / "skills/quiz/SKILL.md").read_text()
-        head = skill.split("## Steps")[0]
-        self.assertIn("## Silence when a drafter reports", head)
-        rule = head.split("## Silence when a drafter reports")[1]
-        self.assertIn("write nothing at all", rule)
-        self.assertIn("end the turn immediately", rule)
-        self.assertIn("not the user", rule)
-        self.assertIn("Do not repeat the pending question", rule)
-
-    def test_quiz_skill_still_asks_for_itself_when_a_batch_is_missing(self):
-        skill = (ROOT / "skills/quiz/SKILL.md").read_text()
-        self.assertIn("If its batch has arrived, use the drafted QUESTION. Otherwise read its page", skill)
-        self.assertIn("If a batch fails or never arrives, ask its concepts yourself", skill)
+        self.assertIn("1. Read its page and find what the page says about the concept.", skill)
+        self.assertIn("2. Ask one question, following the quiz rules", skill)
+        for gone in ("run_in_background", "batch", "drafter", "Silence when", "THIN", "SECOND"):
+            self.assertNotIn(gone, skill)
+        self.assertNotIn("Agent tool", skill)
 
     def test_scheduling_steps_are_unchanged(self):
         skill = (ROOT / "skills/quiz/SKILL.md").read_text()
         self.assertIn('srs.py record "<Concept>" pass', skill)
+        self.assertIn('srs.py flag "<page path>"', skill)
         self.assertIn('srs.py commit -m "quiz: <score>"', skill)
         self.assertIn("Don't record these.", skill)
 
     def test_readme_and_design_describe_it(self):
         for name in ("README.md", "docs/design.md"):
             text = (ROOT / name).read_text()
-            self.assertIn("question-drafter", text, name)
-            self.assertIn("two batches", text, name)
-            self.assertNotIn("up to 5 concepts", text, name)
+            self.assertNotIn("question-drafter", text, name)
+            self.assertNotIn("in the background", text, name)
+        self.assertIn("index-drafter and page-auditor (Haiku, read-only)", (ROOT / "README.md").read_text())
 
 
 if __name__ == "__main__":

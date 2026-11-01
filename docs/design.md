@@ -98,13 +98,11 @@ The schedule doesn't depend on the log: the rules use only each concept's curren
 ## /quiz
 
 1. The script opens a session and the command receives today's list, with each concept's page, focus and recent questions.
-2. Questions are prepared in the background. Claude leaves concept 1 aside and splits the rest of the list into two batches: concepts 2 to 4, and all the rest; concepts with the same owner page always share a batch (a concept of the rest that shares a page with the first batch joins it). It launches one read-only `question-drafter` subagent per batch (same model as the session) in the same turn, then reads concept 1's page and asks the first question itself. For each concept the subagent returns the main question, a second question from another angle for the repeat at the end, the expected answer, and whether the page is too thin for a good question. Questions in a batch don't overlap or give away each other's answers. Claude says nothing when a batch arrives and ends its turn at once: the notification is not the user, and any text would land between the question and the answer.
-3. You answer. Claude says pass or fail with one line of justification, the expected answer and the page, judging against the drafted answer and reading the page only if you contest. Your word wins. If a concept's batch hasn't arrived (or failed), Claude reads the page and formulates the question itself.
-4. Each answer is recorded with `srs.py record`, which updates the state and the log. Pages marked thin are flagged with `srs.py flag`.
-5. Failed concepts are asked again at the end, from another angle (the drafted second question), without recording.
+2. For each concept, Claude reads the owner page and asks one question.
+3. You answer. Claude says pass or fail with one line of justification, the expected answer and the page. You may contest, and your word wins.
+4. Each answer is recorded with `srs.py record`, which updates the state and the log.
+5. Failed concepts are asked again at the end, from another angle, without recording.
 6. At the end: the score, leeches and thin pages, and a commit such as `quiz: 17/20`.
-
-Preparing questions changes nothing in scheduling, `record` or the final commit.
 
 Question rules, editable in `.srs/quiz-rules.md`:
 
