@@ -2,7 +2,7 @@
 
 This document holds the full rules. The [README](../README.md) covers installation and daily use.
 
-Recall turns an Obsidian vault into a study system with three moving parts: an inbox you write in, an index of the concepts each page explains, and a spaced-repetition schedule over the concepts you choose to remember. Five commands drive it. The model writes, asks and judges; a deterministic script keeps the state, does the arithmetic and runs git; you approve.
+Recall turns an Obsidian vault into a study system with three moving parts: an inbox you write in, an index of the concepts each page explains, and a spaced-repetition schedule over the concepts you choose to remember. Six commands drive it. The model writes, asks and judges; a deterministic script keeps the state, does the arithmetic and runs git; you approve.
 
 ## Principles
 
@@ -150,7 +150,7 @@ Each later run indexes one batch of pages (20 by default) with a Haiku subagent 
 Git is the review mechanism, the history and the safety net.
 
 - **Review by diff.** During a command, Claude writes its proposal directly into the files. `srs.py diff` shows the change, and only your approval turns it into a commit; rejecting restores the files through git. When the session changed the index, `srs.py diff` first runs the index checks of `srs.py check` on the lines added or altered since HEAD (description over the limit, repeated concept name against the whole index, link that doesn't resolve, line not understood) and prints the warnings before the diff. They are warnings, not refusals: the commit stays allowed, and the commands tell Claude to fix them before asking for approval.
-- **One commit per operation.** Content, index and state go in together, with a prefix: `integrate:`, `quiz:`, `promote:`, `setup:` or `maintenance:`.
+- **One commit per operation.** Content, index and state go in together, with a prefix: `integrate:`, `quiz:`, `promote:`, `setup:` or `maintenance:`. `/config` is the exception: `srs.py config` commits only the config file, as `config:`, with no session or diff, because the request already states the change and setting the old number back undoes it.
 - **Your manual edits.** What you change in Obsidian is committed as `vault: manual edits` at the start of the next command, so each Recall commit holds only what that command did.
 - **Sessions.** `.srs/session.json`, which is never committed, records the command in progress and every file written during it: by Claude (through the hook) and by the script. A commit includes only those files. Edits you make in parallel wait for the next `vault: manual edits`.
 - **Interrupted sessions.** The next command shows what was left uncommitted and asks whether to keep it (commit) or discard it (`srs.py abort`). Discarding only touches the files the session wrote; files you created yourself are left alone. Folders left empty by deleting session-created files are removed too.

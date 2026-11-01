@@ -58,6 +58,7 @@ Choose the **project** scope, so Recall's commands and hook load only in this va
 | `/promote [page or topic]` | When you have time | Moves concepts that are only in the index into the review schedule. |
 | `/maintenance` | Now and then | Checks the index and the pages, audits unsealed pages, seals the ones that pass, and removes the seals of pages that no longer exist. |
 | `/setup` | Once, then until indexed | Configures the vault and indexes existing pages. |
+| `/config [change]` | When your pace changes | Shows or changes how many concepts you get per day. You can also just ask for it in the conversation. |
 
 Commands work by their short name when nothing else uses it; otherwise type `/recall:quiz` and so on.
 
@@ -93,6 +94,7 @@ The heading level is configurable, and headings inside code blocks don't count. 
 | `promote: N concepts` | `/promote` |
 | `maintenance: N pages verified` | `/maintenance` (with `, M stale seals removed` when it removed seals; with nothing to change it makes no commit) |
 | `setup: ...` | `/setup` |
+| `config: new_per_day 5 -> 10` | `/config`, when a value changes |
 
 Undo the last operation with `git revert HEAD`: content, index and schedule go back together.
 
@@ -145,7 +147,7 @@ To check retention, run `python3 <plugin folder>/scripts/srs.py stats` in the va
 
 ## Configuration
 
-`/setup` writes `.srs/config.json` in your vault:
+`/setup` writes `.srs/config.json` in your vault. Use `/config`, or just ask, to change `scheduling.daily_limit` and `scheduling.new_per_day`; edit the file by hand for the rest.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -158,8 +160,8 @@ To check retention, run `python3 <plugin folder>/scripts/srs.py stats` in the va
 | `inbox_heading_level` | `2` | Heading level that opens an inbox block |
 | `exclude` | `[]` | Patterns to ignore: `folder/`, `*.excalidraw.md`, `Daily/*.md` |
 | `scheduling.algorithm` | `anki` | `anki` or `thirds` |
-| `scheduling.daily_limit` | `20` | Concepts per day |
-| `scheduling.new_per_day` | `5` | New concepts per day |
+| `scheduling.daily_limit` | `20` | Concepts per day, reviews and new concepts together |
+| `scheduling.new_per_day` | `5` | New concepts per day, in the slots reviews leave free. None enter on a day when due reviews exceed the daily limit |
 | `scheduling.day_starts_at` | `4` | Hour the study day starts |
 | `scheduling.mature_interval` | `21` | Days of interval from which `srs.py stats` counts a review as mature |
 | `scheduling.anki` | Anki's defaults | Parameters of `anki`, below |
@@ -223,7 +225,7 @@ In this repository:
 ```text
 obsidian-recall/
 ├── .claude-plugin/       plugin and marketplace manifests
-├── skills/               setup, integrate, quiz, promote, maintenance
+├── skills/               setup, integrate, quiz, promote, maintenance, config
 ├── agents/               index-drafter and page-auditor (Haiku, read-only)
 ├── hooks/                guard.py and its registration
 ├── scripts/srs.py        the engine

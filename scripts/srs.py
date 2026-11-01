@@ -1714,6 +1714,53 @@ def retention_verdict(rate: float, target: list, knob: str) -> str:
     return f"outside the {low:.0%}-{high:.0%} target, but close"
 
 
+def pace_lines(v: Vault) -> list:
+    """The daily pace and what it means for today's list."""
+    sched = v.sched
+    _, info = daily_list(load_state(v), sched, v.today)
+    out = [
+        f"New concepts per day: {sched['new_per_day']}. "
+        f"Daily limit, reviews and new concepts together: {sched['daily_limit']}.",
+        f"Today: {info['done']} done, {info['learning'] + info['reviews']} reviews and {info['new']} new to ask, "
+        f"{info['carried']} carried over to tomorrow, {info['new_waiting']} new concepts waiting.",
+    ]
+    if info["carried"]:
+        out.append("Due reviews exceed the daily limit, so no new concepts enter today: "
+                   "raising new_per_day alone changes nothing until they clear.")
+    if sched["new_per_day"] > sched["daily_limit"]:
+        out.append("new_per_day is above the daily limit, so the daily limit caps new concepts.")
+    return out
+
+
+def cmd_config(args):
+    v = open_vault(args)
+    wanted = {}
+    if args.new_per_day is not None:
+        if args.new_per_day < 0:
+            raise SrsError("--new-per-day must be 0 or more (0 pauses new concepts).")
+        wanted["new_per_day"] = args.new_per_day
+    if args.daily_limit is not None:
+        if args.daily_limit < 1:
+            raise SrsError("--daily-limit must be 1 or more.")
+        wanted["daily_limit"] = args.daily_limit
+    changes = {k: value for k, value in wanted.items() if v.sched[k] != value}
+    if wanted and not changes:
+        print("Nothing changed.")
+    if changes:
+        repo = require_repo(v)
+        path = v.srs / "config.json"
+        raw = read_json(path, {})  # the file as written: load_config's defaults stay out of it
+        for key, value in changes.items():
+            raw.setdefault("scheduling", {})[key] = value
+        write_json(path, raw)
+        summary = ", ".join(f"{k} {v.sched[k]} -> {value}" for k, value in changes.items())
+        # Path-limited, so an open session's edits stay out and its discard can't revert this.
+        sha = repo.commit([f"{SRS_DIR}/config.json"], f"config: {summary}")
+        v.sched.update(changes)
+        print(f"Committed {sha}: config: {summary}.")
+    print("\n".join(pace_lines(v)))
+
+
 def pass_rate(rows: list) -> float:
     return sum(1 for r in rows if r["result"] == "pass") / len(rows)
 
@@ -2207,6 +2254,18 @@ def context_promote(v: Vault, extra: list) -> list:
     return out
 
 
+def context_config(v: Vault) -> list:
+    out = context_header(v, "config")
+    out += session_lines(v)
+    out.append("")
+    out.append("## Current pace")
+    out += pace_lines(v)
+    out.append("")
+    out.append("## Rules")
+    out.append(rules_text())
+    return out
+
+
 def context_maintenance(v: Vault) -> list:
     report = run_checks(v)
     out = context_header(v, "maintenance")
@@ -2251,6 +2310,8 @@ def cmd_context(args):
                     lines = context_quiz(v)
                 elif command == "promote":
                     lines = context_promote(v, args.extra)
+                elif command == "config":
+                    lines = context_config(v)
                 else:
                     lines = context_maintenance(v)
     except SrsError as exc:
@@ -2286,7 +2347,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_init)
 
     p = sub.add_parser("context", help="print the context block a command starts from")
-    p.add_argument("command", choices=["setup", "integrate", "quiz", "promote", "maintenance"])
+    p.add_argument("command", choices=["setup", "integrate", "quiz", "promote", "maintenance", "config"])
     p.add_argument("extra", nargs="*")
     p.set_defaults(func=cmd_context)
 
@@ -2335,6 +2396,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("page")
     p.set_defaults(func=cmd_unflag)
     sub.add_parser("stats", help="retention, counts and queue").set_defaults(func=cmd_stats)
+    p = sub.add_parser("config", help="show or change the daily pace (commits the change itself)")
+    p.add_argument("--new-per-day", type=int, help="new concepts per day (0 pauses them)")
+    p.add_argument("--daily-limit", type=int, help="concepts per day, reviews and new together")
+    p.set_defaults(func=cmd_config)
 
     sub.add_parser("check", help="deterministic maintenance checks").set_defaults(func=cmd_check)
     p = sub.add_parser("verify", help="seal pages that passed the audit")

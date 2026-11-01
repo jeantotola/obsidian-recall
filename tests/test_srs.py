@@ -507,6 +507,102 @@ class GitFlowTest(VaultCase):
         self.assertEqual(files, ["notes/vault/b.md"])
 
 
+class PaceTest(VaultCase):
+    def config(self):
+        return json.loads((self.vault / ".srs/config.json").read_text())
+
+    def commits(self):
+        return len(self.git("log", "--format=%h").splitlines())
+
+    def queue(self, reviews=0, new=0):
+        concepts = {f"r{i:02d}": {"phase": "review", "due": "2026-01-01", "interval": 3} for i in range(reviews)}
+        for i in range(new):
+            concepts[f"n{i:02d}"] = srs.new_record("integrate", D("2026-01-01"), i)
+        state = {"version": 1, "next_order": 99, "concepts": concepts, "flags": {"thin": {}}}
+        (self.vault / ".srs/state.json").write_text(json.dumps(state))
+
+    def test_show_changes_nothing(self):
+        before = self.commits()
+        out = self.srs("config").stdout
+        self.assertIn("New concepts per day: 5.", out)
+        self.assertIn("together: 20.", out)
+        self.assertEqual(self.commits(), before)
+
+    def test_set_commits_only_the_config_file(self):
+        self.write("Math/Bayes.md", "unrelated edit\n")
+        before = self.commits()
+        self.srs("config", "--new-per-day", "10", "--daily-limit", "40")
+        scheduling = self.config()["scheduling"]
+        self.assertEqual((scheduling["new_per_day"], scheduling["daily_limit"]), (10, 40))
+        self.assertEqual(self.commits(), before + 1)
+        self.assertEqual(self.git("show", "--name-only", "--format=", "HEAD").split(), [".srs/config.json"])
+        self.assertEqual(self.git("log", "-1", "--format=%s").strip(),
+                         "config: new_per_day 5 -> 10, daily_limit 20 -> 40")
+
+    def test_only_the_named_flag_changes(self):
+        self.srs("config", "--new-per-day", "0")
+        scheduling = self.config()["scheduling"]
+        self.assertEqual((scheduling["new_per_day"], scheduling["daily_limit"]), (0, 20))
+
+    def test_defaults_stay_out_of_a_sparse_file(self):
+        path = self.vault / ".srs/config.json"
+        path.write_text(json.dumps({"language": "Esperanto"}))
+        self.srs("begin", "setup")
+        self.srs("end")
+        self.srs("config", "--daily-limit", "30")
+        self.assertEqual(self.config(), {"language": "Esperanto", "scheduling": {"daily_limit": 30}})
+
+    def test_invalid_values_are_refused_and_write_nothing(self):
+        before = (self.vault / ".srs/config.json").read_bytes()
+        commits = self.commits()
+        for flags in (("--new-per-day", "-1"), ("--daily-limit", "0"), ("--new-per-day", "9", "--daily-limit", "0")):
+            self.assertNotEqual(self.srs("config", *flags, check=False).returncode, 0, flags)
+        self.assertEqual((self.vault / ".srs/config.json").read_bytes(), before)
+        self.assertEqual(self.commits(), commits)
+
+    def test_same_values_make_no_commit(self):
+        before = self.commits()
+        self.assertIn("Nothing changed.", self.srs("config", "--new-per-day", "5").stdout)
+        self.assertEqual(self.commits(), before)
+
+    def test_an_open_session_keeps_its_edits_and_cannot_revert_the_change(self):
+        self.srs("begin", "integrate")
+        self.edit_via_hook("Math/Bayes.md", "session edit\n")
+        self.srs("config", "--daily-limit", "30")
+        self.assertEqual(self.git("show", "--name-only", "--format=", "HEAD").split(), [".srs/config.json"])
+        session = json.loads((self.vault / ".srs/session.json").read_text())
+        self.assertEqual(session["touched"], ["Math/Bayes.md"])
+        self.srs("discard")
+        self.assertEqual(self.config()["scheduling"]["daily_limit"], 30)
+        self.assertNotEqual((self.vault / "Math/Bayes.md").read_text(), "session edit\n")
+
+    def test_new_limit_reaches_the_next_due_list(self):
+        self.queue(reviews=25)
+        self.assertIn("Carried over to tomorrow: 5.", self.srs("due").stdout)
+        self.srs("config", "--daily-limit", "30")
+        self.assertIn("Carried over to tomorrow: 0.", self.srs("due").stdout)
+
+    def test_warns_when_reviews_block_new_concepts(self):
+        self.queue(reviews=25, new=3)
+        self.assertIn("no new concepts enter today", self.srs("config", "--new-per-day", "10").stdout)
+        self.queue(reviews=1, new=3)
+        self.assertNotIn("no new concepts enter today", self.srs("config").stdout)
+
+    def test_warns_when_the_daily_limit_caps_new_concepts(self):
+        self.assertIn("caps new concepts", self.srs("config", "--new-per-day", "21").stdout)
+
+    def test_refused_without_recall(self):
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        self.assertNotEqual(self.srs("config", cwd=outside, check=False).returncode, 0)
+        self.assertIn("NOT SET UP", self.srs("context", "config", cwd=outside).stdout)
+
+    def test_skill_can_be_triggered_by_asking(self):
+        skill = (ROOT / "skills/config/SKILL.md").read_text()
+        self.assertNotIn("disable-model-invocation", skill)
+        self.assertIn("context config", skill)
+
+
 class ConfigTest(VaultCase):
     def config(self, vault=None):
         return json.loads(((vault or self.vault) / ".srs/config.json").read_text())
@@ -1135,7 +1231,7 @@ class QuestionCountTest(VaultCase):
 class ContextTest(VaultCase):
     def test_contexts_print_without_errors(self):
         self.index("## [[Bayes]]\n- Bayes' theorem\n")
-        for command in ("setup", "integrate", "quiz", "promote", "maintenance"):
+        for command in ("setup", "integrate", "quiz", "promote", "maintenance", "config"):
             out = self.srs("context", command).stdout
             self.assertIn(f"# Recall context: /{command}", out)
             self.assertIn("## Rules", out)
