@@ -1952,6 +1952,8 @@ def render_due(v: Vault, state: dict, idx: Index) -> list:
         out.append(f"Nothing to ask today. Next: {nxt} ({count} concept{'s' if count != 1 else ''})."
                    if nxt else "Nothing to ask today, and nothing is scheduled.")
         return out
+    total = info["done"] + len(items)  # stays the same all day: each answer moves one from items to done
+    out.append(f"Question count: start at {info['done'] + 1}/{total}, end at {total}/{total}.")
     out.append("")
     for n, name in enumerate(items, start=1):
         rec = state["concepts"][name]

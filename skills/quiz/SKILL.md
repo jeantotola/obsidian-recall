@@ -24,13 +24,13 @@ The block above comes from Recall's script. Call the script as `python3 ${CLAUDE
 
 2. For each concept in today's list, in order:
    1. Read its page and find what the page says about the concept.
-   2. Ask one question, following the quiz rules, with the count first ("3/14"). Wait for the answer.
+   2. Ask one question, following the quiz rules, with the count first, starting from the list's Question count line ("11/15"). A skipped concept still advances the count. Wait for the answer.
    3. Judge it as the quiz rules say. If the user contests, their word wins (see Contesting a verdict).
    4. Run `srs.py record "<Concept>" pass` or `fail`, adding `--question "<the question in at most 15 plain words>"` with no quotes, backticks or dollar signs inside. Mention its output only when it reports a leech.
    5. If the page is too thin for a good question, ask what it allows and run `srs.py flag "<page path>"`.
    Skip a concept whose page line says to skip it, and tell the user.
 
-3. After the list, ask again each concept that failed today, with a new question from another angle. Don't record these.
+3. After the list, ask again each concept that failed today, with a new question from another angle, without a count. Don't record these.
 
 4. Run `srs.py today`. Tell the user the score, any leeches (the concept may be too broad or its page confusing: suggest /maintenance) and any page you flagged, in two or three lines.
 

@@ -1088,6 +1088,50 @@ class GuardTest(VaultCase):
         self.assertIsNone(bash('rm -rf /'))
 
 
+class QuestionCountTest(VaultCase):
+    """The quiz's denominator is the day's real total, capped by the daily limit."""
+
+    DAY = "2026-01-11"
+
+    def setUp(self):
+        super().setUp()
+        self.index("## [[Eigendecomposition]]\n- Eigenvectors\n- Eigenvalues\n\n## [[Bayes]]\n- Bayes' theorem\n")
+        self.srs("add", "--source", "integrate", "Eigenvectors", "Eigenvalues", "Bayes' theorem")
+
+    def due(self):
+        return self.srs("due", today=self.DAY).stdout
+
+    def set_daily_limit(self, limit):
+        path = self.vault / ".srs/config.json"
+        config = json.loads(path.read_text())
+        config["scheduling"]["daily_limit"] = limit
+        path.write_text(json.dumps(config))
+
+    def test_denominator_is_the_total_and_stays_through_the_day(self):
+        self.assertIn("Question count: start at 1/3, end at 3/3.", self.due())
+        self.srs("record", "Eigenvectors", "fail", today=self.DAY)
+        self.assertIn("Question count: start at 2/3, end at 3/3.", self.due())
+        self.srs("record", "Eigenvalues", "pass", today=self.DAY)
+        self.assertIn("Question count: start at 3/3, end at 3/3.", self.due())
+
+    def test_denominator_is_capped_by_the_daily_limit(self):
+        self.set_daily_limit(2)
+        self.assertIn("Question count: start at 1/2, end at 2/2.", self.due())
+
+    def test_no_count_when_nothing_is_left_to_ask(self):
+        for name in ("Eigenvectors", "Eigenvalues", "Bayes' theorem"):
+            self.srs("record", name, "pass", today=self.DAY)
+        out = self.due()
+        self.assertIn("Nothing to ask today", out)
+        self.assertNotIn("Question count", out)
+
+    def test_quiz_context_and_skill_use_the_count(self):
+        self.assertIn("Question count: start at 1/3", self.srs("context", "quiz", today=self.DAY).stdout)
+        skill = (ROOT / "skills/quiz/SKILL.md").read_text()
+        self.assertIn("Question count", skill)
+        self.assertIn("without a count", skill)
+
+
 class ContextTest(VaultCase):
     def test_contexts_print_without_errors(self):
         self.index("## [[Bayes]]\n- Bayes' theorem\n")

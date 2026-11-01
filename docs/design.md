@@ -98,7 +98,7 @@ The schedule doesn't depend on the log: the rules use only each concept's curren
 ## /quiz
 
 1. The script opens a session and the command receives today's list, with each concept's page, focus and recent questions.
-2. For each concept, Claude reads the owner page and asks one question.
+2. For each concept, Claude reads the owner page and asks one question, numbered against the day's total: the concepts already answered today plus those still to ask, which the daily limit caps. On a day with 15 questions the count ends at 15/15, and with 31 concepts due it ends at 20/20.
 3. You answer. Claude says pass or fail with one line of justification, the expected answer and the page. You may contest, and your word wins: Claude runs `srs.py amend` with the result you stand for.
 4. Each answer is recorded with `srs.py record`, which updates the state and the log.
 5. Failed concepts are asked again at the end, from another angle, without recording. A concept whose verdict you contested leaves this repeat if it is amended to pass, and joins it if it is amended to fail.
