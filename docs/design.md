@@ -97,7 +97,7 @@ The schedule doesn't depend on the log: the rules use only each concept's curren
 
 ## /quiz
 
-1. The script opens a session and the command receives today's list, with each concept's page, focus and recent questions.
+1. The script opens a session and the command receives today's list, with each concept's page, focus and recent questions. Opening the session also turns off suggested replies in the input line, because they can show the answer (see Git, "Suggestions").
 2. For each concept, Claude reads the owner page and asks one question, numbered against the day's total: the concepts already answered today plus those still to ask, which the daily limit caps. On a day with 15 questions the count ends at 15/15, and with 31 concepts due it ends at 20/20.
 3. You answer. Claude says pass or fail with one line of justification, the expected answer and the page. You may contest, and your word wins: Claude runs `srs.py amend` with the result you stand for.
 4. Each answer is recorded with `srs.py record`, which updates the state and the log.
@@ -154,6 +154,7 @@ Git is the review mechanism, the history and the safety net.
 - **Your manual edits.** What you change in Obsidian is committed as `vault: manual edits` at the start of the next command, so each Recall commit holds only what that command did.
 - **Sessions.** `.srs/session.json`, which is never committed, records the command in progress and every file written during it: by Claude (through the hook) and by the script. A commit includes only those files. Edits you make in parallel wait for the next `vault: manual edits`.
 - **Interrupted sessions.** The next command shows what was left uncommitted and asks whether to keep it (commit) or discard it (`srs.py abort`). Discarding only touches the files the session wrote; files you created yourself are left alone. Folders left empty by deleting session-created files are removed too.
+- **Suggestions.** `srs.py begin quiz` sets `promptSuggestionEnabled` to false in the vault's `.claude/settings.local.json` and saves the previous state in the session. `srs.py end` and `srs.py abort` restore it, so an interrupted quiz is restored when it is recovered. There is no option to keep suggestions on, and the file is left out of Recall's commits. The local file was chosen so other projects aren't affected. An environment variable that keeps suggestions on can't be changed from the script, so `begin` prints a note for the user instead.
 - **Undo.** `git revert HEAD` undoes the last operation, including its effect on the schedule.
 - **.gitignore.** `/setup` adds `.srs/session.json`, `.obsidian/workspace*.json` and `.trash/`.
 - **Subfolders.** The vault may be a subfolder of a larger repository; Recall reads and commits only inside it.

@@ -20,7 +20,7 @@ The block above comes from Recall's script. Call the script as `python3 ${CLAUDE
 
 ## Steps
 
-1. Run `srs.py begin quiz`.
+1. Run `srs.py begin quiz`. It turns off suggested replies in the input line, which can show the answers, until the session ends. If it prints a note for the user, relay it in their language before the first question.
 
 2. For each concept in today's list, in order:
    1. Read its page and find what the page says about the concept.

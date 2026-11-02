@@ -38,6 +38,10 @@ RULES_FILE = PLUGIN_ROOT / "rules.md"
 SYSTEM_FILE_NAMES = {"claude.md", "claude.local.md", "agents.md"}
 GITIGNORE_LINES = [".srs/session.json", ".obsidian/workspace*.json", ".trash/"]
 SESSION_EXCLUDE = ":(exclude).srs/session.json"
+LOCAL_SETTINGS = ".claude/settings.local.json"
+LOCAL_SETTINGS_EXCLUDE = f":(exclude){LOCAL_SETTINGS}"
+SUGGESTION_KEY = "promptSuggestionEnabled"
+SUGGESTION_ENV = "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"
 LOG_HEADER = ["day", "concept", "result", "phase", "interval"]
 DESC_SEP = " — "  # space, em dash, space
 SOURCE_RANK = {"integrate": 0, "promote": 1}
@@ -1029,7 +1033,7 @@ class Repo:
     def status(self, pathspecs=None) -> dict:
         """{vault-relative path: porcelain XY} for changed paths."""
         args = ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--"]
-        args += pathspecs or [".", SESSION_EXCLUDE]
+        args += pathspecs or [".", SESSION_EXCLUDE, LOCAL_SETTINGS_EXCLUDE]
         entries = git(args, self.root).stdout.split("\0")
         changed, i = {}, 0
         while i < len(entries):
@@ -1057,7 +1061,11 @@ class Repo:
         changed = self.status()
         if not changed:
             return 0
-        git(["add", "-A", "--", ".", SESSION_EXCLUDE], self.root)
+        excludes = [SESSION_EXCLUDE]
+        # git add fails on an exclude that names an existing ignored file, and an ignored file needs none.
+        if git(["check-ignore", "-q", "--", LOCAL_SETTINGS], self.root, check=False).returncode != 0:
+            excludes.append(LOCAL_SETTINGS_EXCLUDE)
+        git(["add", "-A", "--", "."] + excludes, self.root)
         git(["commit", "-q", "-m", message], self.root)
         return len(changed)
 
@@ -1134,6 +1142,80 @@ def ensure_gitignore(root: Path) -> bool:
     block = ("\n\n" if text else "") + "# Recall\n" + "\n".join(missing) + "\n"
     write_text(path, text + block)
     return True
+
+
+def read_local_settings(path: Path) -> dict:
+    """The vault's local settings; raises ValueError or OSError if they can't be used."""
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("not a JSON object")
+    return data
+
+
+def write_local_settings(path: Path, data: dict) -> None:
+    """Keeps the order of the user's keys, unlike write_json."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(str(tmp), str(path))
+
+
+def hide_suggestions(v: Vault):
+    """Turn prompt suggestions off for a quiz: they can show the answer in the input line.
+
+    Returns what restore_suggestions needs (None when nothing changed) and notes for the user.
+    """
+    notes = []
+    if os.environ.get(SUGGESTION_ENV, "").strip().lower() in ("1", "true", "yes", "on"):
+        notes.append(
+            "Tell the user, before the first question: suggested replies in the input line can show the "
+            f"answer to each question. The environment variable {SUGGESTION_ENV} keeps them on and overrides "
+            "Recall's setting, so they should turn it off where it is defined."
+        )
+    path = v.root / LOCAL_SETTINGS
+    try:
+        existed = path.exists()
+        data = read_local_settings(path)
+        if data.get(SUGGESTION_KEY) is False:
+            return None, notes
+        saved = {"existed": existed, "had_key": SUGGESTION_KEY in data, "value": data.get(SUGGESTION_KEY)}
+        data[SUGGESTION_KEY] = False
+        write_local_settings(path, data)
+    except (OSError, ValueError) as exc:
+        notes.append(
+            "Tell the user, before the first question: suggested replies in the input line can show the "
+            f"answer to each question, and Recall could not turn them off ({LOCAL_SETTINGS}: {exc}). "
+            "They should turn off Prompt suggestions in /config."
+        )
+        return None, notes
+    return saved, notes
+
+
+def restore_suggestions(v: Vault, session: dict) -> list:
+    """Undo hide_suggestions. A value the user changed during the session is left alone."""
+    saved = session.get("suggestions")
+    if not saved:
+        return []
+    path = v.root / LOCAL_SETTINGS
+    try:
+        data = read_local_settings(path)
+        if data.get(SUGGESTION_KEY) is not False:
+            return []
+        if saved["had_key"]:
+            data[SUGGESTION_KEY] = saved["value"]
+        else:
+            del data[SUGGESTION_KEY]
+        if data or saved["existed"]:
+            write_local_settings(path, data)
+        else:
+            path.unlink()
+            if not any(path.parent.iterdir()):
+                path.parent.rmdir()
+    except (OSError, ValueError) as exc:
+        return [f"Could not restore {SUGGESTION_KEY} in {LOCAL_SETTINGS} ({exc}). Tell the user to fix it by hand."]
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -1341,9 +1423,15 @@ def cmd_begin(args):
     if session is not None:
         raise SrsError(interrupted_report(repo, session), 3)
     snapped = repo.snapshot()
-    save_session(v, {"command": args.command, "started": now_iso(), "touched": []})
+    session = {"command": args.command, "started": now_iso(), "touched": []}
+    suggestion_notes = []
+    if args.command == "quiz":
+        session["suggestions"], suggestion_notes = hide_suggestions(v)
+    save_session(v, session)
     note = f" Committed your manual edits first ({plural(snapped, 'file')}, vault: manual edits)." if snapped else ""
     print(f"Session open for /{args.command}.{note}")
+    for line in suggestion_notes:
+        print(line)
 
 
 HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.M)
@@ -1473,8 +1561,11 @@ def cmd_end(args):
     if pending:
         raise SrsError("Uncommitted changes from this session: " + ", ".join(pending)
                        + ". Commit them (srs.py commit -m ...) or discard them (srs.py discard) first.", 2)
+    notes = restore_suggestions(v, session)
     session_path(v).unlink()
     print(f"Session for /{session.get('command')} closed.")
+    for line in notes:
+        print(line)
 
 
 def cmd_abort(args):
@@ -1485,9 +1576,12 @@ def cmd_abort(args):
         return
     repo = require_repo(v)
     restored, removed, folders = discard_touched(v, repo, session, include_state=True)
+    notes = restore_suggestions(v, session)
     session_path(v).unlink()
     extra = f" and {len(folders)} empty folder(s)" if folders else ""
     print(f"Aborted /{session.get('command')}: restored {len(restored)} file(s), removed {len(removed)} new file(s){extra}.")
+    for line in notes:
+        print(line)
 
 
 def cmd_status(args):

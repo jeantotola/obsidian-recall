@@ -1184,6 +1184,100 @@ class GuardTest(VaultCase):
         self.assertIsNone(bash('rm -rf /'))
 
 
+class SuggestionsTest(VaultCase):
+    """/quiz hides suggested replies, which can show the answer, and puts them back."""
+
+    def setUp(self):
+        super().setUp()
+        self.env.pop("CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION", None)
+        self.settings = self.vault / ".claude/settings.local.json"
+
+    def read_settings(self):
+        return json.loads(self.settings.read_text(encoding="utf-8"))
+
+    def test_quiz_hides_them_and_end_removes_what_it_created(self):
+        self.srs("begin", "quiz")
+        self.assertIs(self.read_settings()["promptSuggestionEnabled"], False)
+        self.srs("end")
+        self.assertFalse(self.settings.exists())
+        self.assertFalse(self.settings.parent.exists())
+
+    def test_other_commands_leave_them_alone(self):
+        self.srs("begin", "integrate")
+        self.assertFalse(self.settings.exists())
+        self.srs("end")
+
+    def test_end_restores_the_previous_value_and_keeps_other_keys(self):
+        self.write(".claude/settings.local.json", '{"z": 1, "promptSuggestionEnabled": true, "a": 2}\n')
+        self.srs("begin", "quiz")
+        self.assertIs(self.read_settings()["promptSuggestionEnabled"], False)
+        self.srs("end")
+        self.assertEqual(list(self.read_settings().items()), [("z", 1), ("promptSuggestionEnabled", True), ("a", 2)])
+
+    def test_end_removes_the_key_but_keeps_a_file_that_already_existed(self):
+        self.write(".claude/settings.local.json", "{}\n")
+        self.srs("begin", "quiz")
+        self.srs("end")
+        self.assertEqual(self.read_settings(), {})
+
+    def test_already_off_stays_off(self):
+        self.write(".claude/settings.local.json", '{"promptSuggestionEnabled": false}\n')
+        self.srs("begin", "quiz")
+        self.srs("end")
+        self.assertIs(self.read_settings()["promptSuggestionEnabled"], False)
+
+    def test_a_value_changed_during_the_quiz_is_left_alone(self):
+        self.srs("begin", "quiz")
+        self.write(".claude/settings.local.json", '{"promptSuggestionEnabled": true}\n')
+        self.srs("end")
+        self.assertIs(self.read_settings()["promptSuggestionEnabled"], True)
+
+    def test_an_interrupted_quiz_is_restored_when_recovered(self):
+        self.srs("begin", "quiz")
+        self.assertEqual(self.srs("begin", "quiz", check=False).returncode, 3)
+        self.assertIs(self.read_settings()["promptSuggestionEnabled"], False)
+        self.srs("abort")
+        self.assertFalse(self.settings.exists())
+
+    def assert_only_the_note_is_committed(self):
+        self.write(".claude/settings.local.json", '{"a": 1}\n')
+        self.write("Math/Bayes.md", "edited again\n")
+        self.srs("begin", "quiz")
+        files = self.git("show", "--name-only", "--format=", "HEAD").split()
+        self.assertEqual(files, ["Math/Bayes.md"])
+        self.assertNotIn("Edits outside Recall", self.srs("status").stdout)
+        self.srs("end")
+
+    def test_the_file_is_never_committed_when_git_does_not_ignore_it(self):
+        self.git("config", "core.excludesFile", os.devnull)
+        self.assert_only_the_note_is_committed()
+
+    def test_the_file_is_never_committed_when_git_ignores_it(self):
+        self.write(".gitignore", (self.vault / ".gitignore").read_text() + ".claude/settings.local.json\n")
+        self.git("add", ".gitignore")
+        self.git("commit", "-q", "-m", "ignore local settings")
+        self.assert_only_the_note_is_committed()
+
+    def test_invalid_settings_are_kept_and_the_user_is_told(self):
+        self.write(".claude/settings.local.json", "not json\n")
+        out = self.srs("begin", "quiz").stdout
+        self.assertIn("Tell the user", out)
+        self.assertIn("/config", out)
+        self.srs("end")
+        self.assertEqual(self.settings.read_text(), "not json\n")
+
+    def test_the_environment_variable_gets_an_explanation(self):
+        self.env["CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"] = "true"
+        out = self.srs("begin", "quiz").stdout
+        self.assertIn("can show the answer", out)
+        self.assertIn("turn it off where it is defined", out)
+        self.srs("end")
+
+    def test_no_note_without_the_variable(self):
+        self.assertNotIn("Tell the user", self.srs("begin", "quiz").stdout)
+        self.srs("end")
+
+
 class QuestionCountTest(VaultCase):
     """The quiz's denominator is the day's real total, capped by the daily limit."""
 

@@ -100,6 +100,13 @@ Undo the last operation with `git revert HEAD`: content, index and schedule go b
 
 If a session closes in the middle of a command, the next command shows what was left uncommitted and asks whether to keep or discard it. Discarding only touches the files Claude edited, and removes folders that end up empty after deleting files created in the session.
 
+### Suggestions during /quiz
+
+Claude Code can suggest your next reply in the input line, and during a quiz that suggestion can show the answer. So `/quiz` turns suggestions off when it starts and puts your previous setting back when it ends, by changing `promptSuggestionEnabled` in the vault's `.claude/settings.local.json`. Recall never commits this file, and removes it afterwards if it created it.
+
+- If a session closes in the middle of a quiz, suggestions stay off in this vault until the next Recall command recovers the session.
+- If `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION` is set to true, it overrides this setting, and `/quiz` tells you to turn it off where it is defined.
+
 ## The index
 
 ```markdown
