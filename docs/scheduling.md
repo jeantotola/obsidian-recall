@@ -34,6 +34,8 @@ Each concept stores one date, the study day from which it is due, and stays due 
 
 **New content (hold).** When `/integrate` adds content to a concept in review, the concept is put on hold: due the next study day, with a focus line that aims the question at the new part. On that answer, a pass keeps the interval as it was, without growth, and a fail is a normal lapse. A concept in learning or relearning only gets the focus.
 
+**Gaps don't touch the schedule.** A fail also records the idea the answer missed, and the concept's questions target it until a pass at least 3 days after the previous answer. This changes what is asked, never the dates, and it works the same with every algorithm (see [the design](design.md)).
+
 **Leeches.** A concept with as many lapses as the algorithm's `leech_threshold` is reported by `/quiz` and `/maintenance`. It is probably too broad (split it) or its page is unclear (rewrite it).
 
 **Determinism.** Fuzz, the small random spread that keeps concepts learned together from staying due on the same days, comes from a hash of the concept name and the day. The same answers always give the same dates, which keeps the state reproducible and the git history meaningful.

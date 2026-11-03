@@ -42,6 +42,8 @@ LOCAL_SETTINGS = ".claude/settings.local.json"
 LOCAL_SETTINGS_EXCLUDE = f":(exclude){LOCAL_SETTINGS}"
 SUGGESTION_KEY = "promptSuggestionEnabled"
 SUGGESTION_ENV = "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"
+GAP_CLOSE_DAYS = 3  # a pass closes a gap once this many days have passed since the previous answer
+GAP_STUCK_FAILS = 3  # /maintenance reports a gap with this many fails
 LOG_HEADER = ["day", "concept", "result", "phase", "interval"]
 DESC_SEP = " — "  # space, em dash, space
 SOURCE_RANK = {"integrate": 0, "promote": 1}
@@ -1270,6 +1272,7 @@ def run_checks(v: Vault) -> dict:
         "stale_seals": stale_seals(v, verified),
         "thin": sorted(state["flags"]["thin"].items()),
         "leeches": [],
+        "stuck_gaps": [],
         "index": idx,
     }
     report.update(index_checks(v, idx))
@@ -1288,6 +1291,9 @@ def run_checks(v: Vault) -> dict:
             report["orphans"].append(name)
         if int(rec.get("lapses") or 0) >= v.leech_at:
             report["leeches"].append((name, rec["lapses"]))
+        gap = rec.get("gap")
+        if gap and int(gap.get("fails") or 0) >= GAP_STUCK_FAILS:
+            report["stuck_gaps"].append((name, gap["idea"], gap["fails"]))
     return report
 
 
@@ -1316,6 +1322,7 @@ def format_checks(v: Vault, report: dict, only=None) -> list:
         ("stale_seals", "Stale seals (the file is gone or is no longer a page; /maintenance removes them)", lambda x: x),
         ("thin", "Pages flagged as thin by /quiz", lambda x: f"{x[0]} (flagged {x[1]})"),
         ("leeches", f"Leeches ({v.leech_at}+ lapses)", lambda x: f"{x[0]} ({x[1]} lapses)"),
+        ("stuck_gaps", f"Gaps that won't close ({GAP_STUCK_FAILS}+ fails)", lambda x: f"{x[0]}: {x[1]} ({x[2]} fails)"),
     ]
     out = []
     for key, title, render in sections:
@@ -1609,6 +1616,30 @@ def cmd_due(args):
         print(line)
 
 
+def apply_gap(updated: dict, before: dict, passed: bool, today: dt.date, idea) -> str:
+    """Keep the concept's gap, the idea it failed, up to date after an answer. The schedule is
+    untouched: the concept's own dates are the gap's dates, and while it is open its questions
+    target it. Returns text for the answer's output.
+
+    A question on new content (a focus) doesn't test the gap, so its pass leaves the gap open,
+    and its fail replaces the gap when it names another idea."""
+    gap = before.get("gap")
+    tested = gap and not before.get("focus")
+    if passed:
+        last = parse_day(before.get("last"))
+        if tested and last and (today - last).days >= GAP_CLOSE_DAYS:
+            updated.pop("gap", None)
+            return f" Gap closed: {gap['idea']}."
+        return ""
+    if tested:
+        updated["gap"] = dict(gap, fails=int(gap.get("fails") or 1) + 1)
+    elif idea:
+        updated["gap"] = {"idea": short(idea, 200), "fails": 1}
+    elif not gap:
+        return ' No gap opened: run srs.py gap "<Concept>" "<the idea the answer missed>".'
+    return ""
+
+
 def cmd_record(args):
     v = open_vault(args)
     state = load_state(v)
@@ -1626,13 +1657,14 @@ def cmd_record(args):
     # The snapshot lets `amend` undo this answer on the same study day; the next record replaces it.
     snapshot = copy.deepcopy({k: val for k, val in rec.items() if k != "undo"})
     updated = apply_answer(rec, args.result == "pass", v.today, v.sched, name)
+    note = apply_gap(updated, snapshot, args.result == "pass", v.today, args.gap)
     if args.question:
         updated["questions"] = (list(rec.get("questions") or []) + [short(args.question, 200)])[-3:]
     updated["undo"] = {"day": v.today.isoformat(), "before": snapshot}
     state["concepts"][name] = updated
     save_state(v, state)
     append_log(v, [v.today.isoformat(), name, args.result, before, interval])
-    print(describe_answer(name, before, updated, v.today, v.leech_at))
+    print(describe_answer(name, before, updated, v.today, v.leech_at) + note)
 
 
 def rewrite_log_result(v: Vault, day: str, name: str, result: str):
@@ -1688,12 +1720,13 @@ def cmd_amend(args):
     restored = copy.deepcopy(undo["before"])
     before = restored.get("phase")
     updated = apply_answer(restored, args.result == "pass", v.today, v.sched, name)
+    note = apply_gap(updated, undo["before"], args.result == "pass", v.today, args.gap)
     updated["questions"] = list(rec.get("questions") or [])  # as they were after the record
     updated["undo"] = {"day": today, "before": undo["before"]}  # amending again starts from the same snapshot
     state["concepts"][name] = updated
     save_state(v, state)
     rewrite_log_result(v, today, name, args.result)
-    print(describe_answer(name, before, updated, v.today, v.leech_at))
+    print(describe_answer(name, before, updated, v.today, v.leech_at) + note)
 
 
 def cmd_today(args):
@@ -1745,6 +1778,29 @@ def cmd_update(args):
     state["concepts"][name] = apply_update(state["concepts"][name], v.today, short(args.focus, 300))
     save_state(v, state)
     print(f"{name}: updated; the next question targets the new content.")
+
+
+def cmd_gap(args):
+    """Open a gap by hand, or close one: its idea is wrong, or the page no longer supports it."""
+    if bool(args.idea) == args.close:
+        raise SrsError('Give the idea, or --close: srs.py gap "<Concept>" "<idea>" or srs.py gap "<Concept>" --close.')
+    v = open_vault(args)
+    state = load_state(v)
+    name = find_state_name(state, args.concept)
+    if name is None:
+        raise SrsError(f"'{args.concept}' is not in the review schedule.", 2)
+    rec = state["concepts"][name]
+    if args.close:
+        if not rec.get("gap"):
+            print(f"{name} has no open gap.")
+            return
+        idea = rec.pop("gap")["idea"]
+        save_state(v, state)
+        print(f"{name}: gap closed: {idea}.")
+        return
+    rec["gap"] = {"idea": short(args.idea, 200), "fails": 1}
+    save_state(v, state)
+    print(f"{name}: gap open: {rec['gap']['idea']}.")
 
 
 def cmd_rename(args):
@@ -1902,6 +1958,7 @@ def cmd_stats(args):
         counts[rec["phase"]] += 1
     print("Concepts: " + ", ".join(f"{p} {counts[p]}" for p in ("new", "learning", "review", "relearning")))
     print(queue_summary(state, v))
+    print(f"Open gaps: {sum(1 for r in state['concepts'].values() if r.get('gap'))}")
     leeches = [(n, r["lapses"]) for n, r in state["concepts"].items()
                if int(r.get("lapses") or 0) >= v.leech_at]
     if leeches:
@@ -2245,6 +2302,8 @@ def render_due(v: Vault, state: dict, idx: Index) -> list:
         out.append(f"   Page: {where}")
         if rec.get("focus"):
             out.append(f"   Focus (new content): {rec['focus']}")
+        elif rec.get("gap"):
+            out.append(f"   Gap (ask about this idea, not a new angle): {rec['gap']['idea']}")
         if rec.get("questions"):
             out.append("   Recent questions: " + " | ".join(rec["questions"]))
     return out
@@ -2597,11 +2656,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("concept")
     p.add_argument("result", choices=["pass", "fail"])
     p.add_argument("--question", help="the question asked, in a few plain words")
+    p.add_argument("--gap", help="on a fail, the idea the answer missed, in a few plain words")
     p.set_defaults(func=cmd_record)
     p = sub.add_parser("amend", help="correct today's answer for a concept (a contested verdict)")
     p.add_argument("concept")
     p.add_argument("result", choices=["pass", "fail"])
+    p.add_argument("--gap", help="when amending to fail, the idea the answer missed")
     p.set_defaults(func=cmd_amend)
+    p = sub.add_parser("gap", help="open a concept's gap by hand, or close it")
+    p.add_argument("concept")
+    p.add_argument("idea", nargs="?")
+    p.add_argument("--close", action="store_true")
+    p.set_defaults(func=cmd_gap)
     sub.add_parser("today", help="today's score").set_defaults(func=cmd_today)
     p = sub.add_parser("add", help="queue concepts for review")
     p.add_argument("--source", choices=["integrate", "promote"], required=True)

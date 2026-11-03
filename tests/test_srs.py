@@ -1184,6 +1184,139 @@ class GuardTest(VaultCase):
         self.assertIsNone(bash('rm -rf /'))
 
 
+class GapTest(VaultCase):
+    """A fail opens a gap on the concept: its questions target the idea until a pass after some days."""
+
+    DAY = "2026-01-11"
+
+    def setUp(self):
+        super().setUp()
+        self.index("## [[Eigendecomposition]]\n- Eigenvectors\n- Eigenvalues\n")
+        self.srs("add", "--source", "integrate", "Eigenvectors")
+        self.srs("record", "Eigenvectors", "fail", "--gap", "Av = λv defines them", today=self.DAY)
+
+    def record(self):
+        return json.loads((self.vault / ".srs/state.json").read_text(encoding="utf-8"))["concepts"]["Eigenvectors"]
+
+    def answer(self, result, today, *extra):
+        return self.srs("record", "Eigenvectors", result, *extra, today=today).stdout
+
+    def set_record(self, **values):
+        path = self.vault / ".srs/state.json"
+        state = json.loads(path.read_text(encoding="utf-8"))
+        state["concepts"]["Eigenvectors"].update(values)
+        path.write_text(json.dumps(state), encoding="utf-8")
+
+    def test_a_fail_opens_the_gap_and_the_list_shows_it(self):
+        self.assertEqual(self.record()["gap"], {"idea": "Av = λv defines them", "fails": 1})
+        due = self.srs("due", today="2026-01-12").stdout
+        self.assertIn("Gap (ask about this idea, not a new angle): Av = λv defines them", due)
+
+    def test_a_pass_closes_it_only_after_enough_days(self):
+        self.assertNotIn("Gap closed", self.answer("pass", "2026-01-12"))  # 1 day since the fail
+        self.assertNotIn("Gap closed", self.answer("pass", "2026-01-13"))  # 1 day
+        self.assertIn("gap", self.record())
+        self.set_record(due="2026-01-16")  # the algorithm's fuzz moves the real date by a day
+        self.assertIn("Gap closed: Av = λv defines them", self.answer("pass", "2026-01-16"))  # 3 days
+        self.assertNotIn("gap", self.record())
+        self.assertNotIn("Gap", self.srs("due", today="2026-02-20").stdout)
+
+    def test_a_late_first_pass_closes_it(self):
+        self.assertIn("Gap closed", self.answer("pass", "2026-01-14"))
+
+    def test_a_fail_keeps_the_idea_and_counts(self):
+        self.answer("fail", "2026-01-12", "--gap", "a reworded idea")
+        self.assertEqual(self.record()["gap"], {"idea": "Av = λv defines them", "fails": 2})
+
+    def test_the_dates_are_the_same_as_without_a_gap(self):
+        self.answer("pass", "2026-01-12")
+        with_gap = self.record()
+        self.srs("gap", "Eigenvectors", "--close", today="2026-01-12")
+        self.assertEqual(self.record()["due"], with_gap["due"])
+        self.srs("add", "--source", "integrate", "Eigenvalues", today=self.DAY)
+        self.srs("record", "Eigenvalues", "fail", today="2026-01-12")
+        self.srs("record", "Eigenvalues", "pass", today="2026-01-13")
+        other = json.loads((self.vault / ".srs/state.json").read_text(encoding="utf-8"))["concepts"]["Eigenvalues"]
+        self.assertEqual((other["phase"], other["interval"]), (with_gap["phase"], with_gap["interval"]))
+
+    def test_a_fail_without_an_idea_asks_for_it(self):
+        self.srs("add", "--source", "integrate", "Eigenvalues", today=self.DAY)
+        out = self.srs("record", "Eigenvalues", "fail", today="2026-01-12").stdout
+        self.assertIn("No gap opened", out)
+
+    def test_a_question_on_new_content_does_not_test_the_gap(self):
+        self.set_record(phase="review", interval=8, due="2026-01-20", last="2026-01-12", focus="new part")
+        due = self.srs("due", today="2026-01-20").stdout
+        self.assertIn("Focus (new content): new part", due)
+        self.assertNotIn("Gap (", due)
+        self.assertNotIn("Gap closed", self.answer("pass", "2026-01-20"))
+        self.assertEqual(self.record()["gap"]["fails"], 1)
+        self.assertIsNone(self.record()["focus"])
+
+    def test_a_failed_focus_replaces_the_gap_with_its_idea(self):
+        self.set_record(phase="review", interval=8, due="2026-01-20", last="2026-01-12", focus="new part")
+        self.answer("fail", "2026-01-20", "--gap", "the new part")
+        self.assertEqual(self.record()["gap"], {"idea": "the new part", "fails": 1})
+
+    def test_amend_to_pass_removes_the_gap_of_that_fail(self):
+        self.srs("amend", "Eigenvectors", "pass", today=self.DAY)
+        self.assertNotIn("gap", self.record())
+
+    def test_amend_to_fail_opens_the_gap(self):
+        self.srs("add", "--source", "integrate", "Eigenvalues", today=self.DAY)
+        self.srs("record", "Eigenvalues", "pass", today="2026-01-12")
+        self.srs("amend", "Eigenvalues", "fail", "--gap", "the idea", today="2026-01-12")
+        other = json.loads((self.vault / ".srs/state.json").read_text(encoding="utf-8"))["concepts"]["Eigenvalues"]
+        self.assertEqual(other["gap"], {"idea": "the idea", "fails": 1})
+
+    def test_amend_can_undo_a_closed_gap(self):
+        self.answer("pass", "2026-01-14")
+        self.assertNotIn("gap", self.record())
+        self.srs("amend", "Eigenvectors", "fail", today="2026-01-14")
+        self.assertEqual(self.record()["gap"]["fails"], 2)
+
+    def test_opening_and_closing_by_hand(self):
+        self.assertIn("gap closed", self.srs("gap", "Eigenvectors", "--close").stdout)
+        self.assertNotIn("gap", self.record())
+        self.assertIn("no open gap", self.srs("gap", "Eigenvectors", "--close").stdout)
+        self.assertIn("gap open", self.srs("gap", "Eigenvectors", "another idea").stdout)
+        self.assertEqual(self.record()["gap"], {"idea": "another idea", "fails": 1})
+
+    def test_the_gap_command_needs_one_of_idea_or_close(self):
+        self.assertEqual(self.srs("gap", "Eigenvectors", check=False).returncode, 1)
+        self.assertEqual(self.srs("gap", "Eigenvectors", "idea", "--close", check=False).returncode, 1)
+        self.assertEqual(self.srs("gap", "Nope", "idea", check=False).returncode, 2)
+
+    def test_a_rename_carries_the_gap(self):
+        self.index("## [[Eigendecomposition]]\n- Eigenvector\n- Eigenvalues\n")
+        self.srs("rename", "Eigenvectors", "Eigenvector")
+        state = json.loads((self.vault / ".srs/state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["concepts"]["Eigenvector"]["gap"]["idea"], "Av = λv defines them")
+
+    def test_maintenance_reports_only_gaps_that_wont_close(self):
+        self.assertIn("Gaps that won't close (3+ fails): none", self.srs("check").stdout)
+        self.answer("fail", "2026-01-12")
+        self.answer("fail", "2026-01-13")
+        self.assertIn("Eigenvectors: Av = λv defines them (3 fails)", self.srs("check").stdout)
+
+    def test_stats_count_open_gaps(self):
+        self.assertIn("Open gaps: 1", self.srs("stats").stdout)
+
+    def test_a_record_from_an_older_version_still_works(self):
+        self.set_record(gap=None)
+        self.assertNotIn("Gap (", self.srs("due", today="2026-01-12").stdout)
+        self.answer("pass", "2026-01-12")
+
+    def test_the_quiz_skill_targets_the_gap(self):
+        skill = (ROOT / "skills/quiz/SKILL.md").read_text()
+        self.assertIn('--gap "<the idea the answer missed', skill)
+        self.assertIn("Test the idea the answer missed", skill)
+        self.assertNotIn("from another angle", skill)
+        self.assertIn('srs.py gap "<Concept>" --close', skill)
+        self.assertIn("idea the gap names", (ROOT / "templates/quiz-rules.md").read_text())
+        self.assertIn("gaps that won't close", (ROOT / "skills/maintenance/SKILL.md").read_text())
+
+
 class SuggestionsTest(VaultCase):
     """/quiz hides suggested replies, which can show the answer, and puts them back."""
 

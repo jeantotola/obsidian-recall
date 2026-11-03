@@ -31,6 +31,7 @@ The block above comes from Recall's script. Call the script as `python3 ${CLAUDE
    - pages that failed, with the criterion and the reason;
    - problems from the deterministic checks, with the fix for each: split pages over the size limit, rename or merge duplicate names, shorten long descriptions, fix links that don't resolve, remove or re-add orphans;
    - leeches: the concept may be too broad (split it) or its page confusing (rewrite it);
+   - gaps that won't close: suggest rewriting that part of the page, or making the idea a concept of its own, in the index and the schedule, then running `srs.py gap "<Concept>" --close`;
    - pages flagged as thin by /quiz;
    - pages not in the index: suggest /setup to index them.
 

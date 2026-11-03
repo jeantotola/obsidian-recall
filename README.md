@@ -66,7 +66,7 @@ Commands work by their short name when nothing else uses it; otherwise type `/re
 
 1. **Study and write.** Add blocks at the end of `inbox.md`, each starting with a `##` heading of a few words. A date in the heading is fine.
 2. **Run `/integrate`.** First Claude reads all the blocks it will process, groups the ones about the same subject (even when their titles are equal or vague) and shows a short plan: for each group, an existing page, a new page with its folder, or sections of one page, and for each block its place in didactic order: the order of the sections in a new page, or the exact point in an existing page, such as "after the section X". Answer `ok` or adjust it. Then, for each block, Claude writes the change at that point, without moving or rewriting the text already there, and shows you the git diff: groups run from the newest to the oldest, and inside a group the blocks run in the plan's order. A block that continues a page created or edited in the same session becomes a section of that page, unless the plan says otherwise. Approve each diff, ask for a change, skip the block (it stays in the inbox) or stop. At the end comes one list of the concepts it touched, each with a suggestion (review, or index only). Answer `ok` or adjust.
-3. **Tomorrow, run `/quiz`.** One question per due concept, asked from its page. A missed concept comes back at the end of the session with another question, and again the next day.
+3. **Tomorrow, run `/quiz`.** One question per due concept, asked from its page. When you miss something, Claude notes the idea you missed. It comes back at the end of the session and in that concept's next questions, until you get it right at least 3 days later.
 
 `/integrate 3` processes only the three newest blocks; `/integrate path/to/old-diary.md` integrates another file block by block, the same way.
 
@@ -152,6 +152,7 @@ Both share the rest:
 - With no lapses, both give about 1, 3, 8, 20, 50, 125 and 313 days.
 - A late review counts half the delay: a 10-day interval answered 10 days late grows from 15 days instead of 10.
 - A failed concept comes back the next day. The same-day repeat in `/quiz` is practice and isn't recorded.
+- A fail also records the idea you missed, called a gap. The concept's next questions test that idea until you pass it at least 3 days after the previous answer, and then the gap disappears. Gaps change what is asked, never the dates. `/maintenance` lists the ones that won't close.
 - A contested verdict is corrected with `srs.py amend "<Concept>" pass|fail`, on the same study day only. The concept goes back to how it was before the answer and the answer is applied again with the new result; the next day, the answer is final.
 - New content for a concept in review brings it back the next day with a question on the new part. A pass keeps the interval; a fail is a normal lapse.
 - Up to 20 concepts a day: learning, relearning and updated concepts first, then reviews (most overdue first), then new concepts, at most 5 a day and only if there is room.

@@ -70,7 +70,15 @@ A concept is **new** (queued, never asked), **learning** (failed before its firs
 
 **Study day.** The day starts at 4 a.m. by default, so a session after midnight counts as the previous day. A concept that enters the queue becomes eligible on the next study day, so it is never asked on the day you integrated it.
 
-**Within a session.** A failed concept is asked again at the end of the session with a different question. That repeat isn't recorded; the script refuses a second answer for the same concept on the same day. The one way to change an answer is `srs.py amend`, for a verdict you contest (see below).
+**Within a session.** A failed concept is asked again at the end of the session, on the idea the answer missed, in different wording. That repeat isn't recorded; the script refuses a second answer for the same concept on the same day. The one way to change an answer is `srs.py amend`, for a verdict you contest (see below).
+
+**Gaps.** What fails is usually one idea of a concept, not the whole concept. A fail opens a gap: one line, in the concept's record, naming the idea the answer missed. While it is open, the concept's questions test that idea instead of taking a new angle. A pass closes it when at least 3 days have passed since the previous answer, and the field disappears; a fail keeps it open and counts.
+
+- **The schedule is untouched.** A failed concept already comes back the next day and on growing intervals, so those dates are the gap's dates. A gap changes what is asked, never when, and adds no question of its own. There is one question per concept per day, and at most one gap per concept.
+- **It expires.** A wrongly named idea costs a few questions and goes away, and nothing accumulates. The page stays the only source: Claude reads it before asking, and closes a gap the page no longer supports.
+- **A question on new content doesn't test the gap.** With a focus, the question targets the focus and the gap stays open. If that answer fails on another idea, its gap replaces the old one.
+- **Gaps that won't close.** With 3 fails or more, `/maintenance` lists the gap and suggests rewriting that part of the page or making the idea a concept of its own. That is the only way a gap becomes permanent, and it takes your approval. It stays out of the quiz, so it doesn't interrupt.
+- **Why not split concepts into scheduled ideas?** Each idea would need its own dates, text and upkeep whenever a page changes, and the daily limit would then buy a third as many concepts at about three ideas each. Gaps cost a smaller share of new concepts, because failed ideas are asked and failed more often, but the cost is only where you actually failed. The price is coverage: an idea that is never asked is never reviewed, as before.
 
 **New content.** When `/integrate` adds content to a concept in review, the concept is put on hold: due the next study day, with a focus line describing the new part. The next question targets the focus; a pass keeps the interval as it was, and a fail is a normal lapse for the algorithm. A concept already in learning or relearning only gets the focus.
 
@@ -101,7 +109,7 @@ The schedule doesn't depend on the log: the rules use only each concept's curren
 2. For each concept, Claude reads the owner page and asks one question, numbered against the day's total: the concepts already answered today plus those still to ask, which the daily limit caps. On a day with 15 questions the count ends at 15/15, and with 31 concepts due it ends at 20/20.
 3. You answer. Claude says pass or fail with one line of justification, the expected answer and the page. You may contest, and your word wins: Claude runs `srs.py amend` with the result you stand for.
 4. Each answer is recorded with `srs.py record`, which updates the state and the log.
-5. Failed concepts are asked again at the end, from another angle, without recording. A concept whose verdict you contested leaves this repeat if it is amended to pass, and joins it if it is amended to fail.
+5. Each failed concept opens a gap naming the idea the answer missed (see Gaps), and is asked again at the end on that idea, without recording. A concept whose verdict you contested leaves this repeat if it is amended to pass, and joins it if it is amended to fail.
 6. At the end: the score, leeches and thin pages, and a commit such as `quiz: 17/20`.
 
 Question rules, editable in `.srs/quiz-rules.md`:
@@ -109,7 +117,7 @@ Question rules, editable in `.srs/quiz-rules.md`:
 - One question per concept, atomic, with a direct answer and no calculation.
 - It must make sense years later: no author, book or course trivia; definitions that hold beyond the current topic.
 - Asked from the owner page, not from the model's general knowledge. A page too thin for a good question is flagged with `srs.py flag` and reported by `/maintenance`.
-- A different angle from the recent questions; aimed at the focus when there is one.
+- A different angle from the recent questions; aimed at the focus or the gap when there is one.
 - Free recall, never multiple choice: recalling trains memory more than recognizing.
 - Meant to consolidate, not to catch you out.
 - Judged strictly: the core idea present and no conceptual error. Lenient grading stretches intervals for nothing.
@@ -191,5 +199,6 @@ Two hooks are registered in `hooks/hooks.json`.
 
 - **The diff mechanism.** The git diff is version one; if `/integrate` feels heavy, it can change.
 - **Algorithm parameters, limits and leech thresholds.** Calibrate with `srs.py stats` after a month of use.
+- **Gaps.** After a month of use, check the pass rate on gap questions and how many gaps won't close, and adjust the 3 days and the 3 fails. If failed ideas keep being ones never asked before, reconsider how much coverage matters.
 - **FSRS.** Compare it with the built-in algorithms after a few months, using the log.
 - **Native Windows.** Test the script and the hook outside WSL.
