@@ -60,7 +60,7 @@ Choose the **project** scope, so Recall's commands and hook load only in this va
 | `/setup` | Once, then until indexed | Configures the vault and indexes existing pages. |
 | `/config [change]` | When your pace changes | Shows or changes how many concepts you get per day. You can also just ask for it in the conversation. |
 
-Commands work by their short name when nothing else uses it; otherwise type `/recall:quiz` and so on.
+Commands work by their short name when nothing else uses it; otherwise type `/recall:quiz` and so on. When you open a new session in the vault, Recall tells you which of them today calls for ([Welcome message](#welcome-message)).
 
 ### A day with Recall
 
@@ -69,6 +69,18 @@ Commands work by their short name when nothing else uses it; otherwise type `/re
 3. **Tomorrow, run `/quiz`.** One question per due concept, asked from its page. A missed concept comes back at the end of the session with another question, and again the next day.
 
 `/integrate 3` processes only the three newest blocks; `/integrate path/to/old-diary.md` integrates another file block by block, the same way.
+
+### Welcome message
+
+A new session in the vault starts with a short status, shown directly by a `SessionStart` hook, so it costs no tokens and adds no delay:
+
+```text
+Recall: today 22 questions: 15 reviews, 7 new concepts
+  /quiz        take today's quiz
+  /integrate   2 blocks in the inbox: MLflow, Bayes nets
+```
+
+It shows only what matters: what is left if you stopped mid-quiz, the score once the quiz is done, the next quiz when there is nothing to ask, and an interrupted session as the first line. An empty inbox drops the `/integrate` line. The message is in Portuguese when `language` contains "portugu" or starts with "pt", and in English otherwise. It only reads the vault's files: it doesn't run git or write anything. Outside a vault with Recall set up, it prints nothing.
 
 ### Inbox format
 
@@ -234,7 +246,7 @@ obsidian-recall/
 ├── .claude-plugin/       plugin and marketplace manifests
 ├── skills/               setup, integrate, quiz, promote, maintenance, config
 ├── agents/               index-drafter and page-auditor (Haiku, read-only)
-├── hooks/                guard.py and its registration
+├── hooks/                guard.py and the registration of both hooks
 ├── scripts/srs.py        the engine
 ├── templates/            starting files for a vault
 ├── rules.md              rules every command follows
@@ -247,7 +259,7 @@ obsidian-recall/
 
 - **The script decides.** `srs.py` computes every date and the daily list, checks the index, parses the inbox and runs git. Each command injects its output before Claude reads the command, so the daily list arrives ready.
 - **Claude writes, asks and judges.** It integrates your notes, asks questions from each concept's page, and judges answers strictly. You can contest a verdict: if you do, Claude runs `srs.py amend` and the answer is corrected on the spot, in the schedule and in the log.
-- **The hook keeps both in their lanes.** It blocks direct edits to `.srs/`, lets Claude edit notes without prompts only while a command is open (recording each file for the diff), and lets the plugin's own script run without permission prompts. Because the review is the git diff, it works the same in every permission mode.
+- **The hook keeps both in their lanes.** It blocks direct edits to `.srs/`, lets Claude edit notes without prompts only while a command is open (recording each file for the diff), and lets the plugin's own script run without permission prompts. Because the review is the git diff, it works the same in every permission mode. A second hook shows the welcome message when a new session starts.
 - **Cheap agents read in bulk.** Indexing and auditing pages run in Haiku subagents that can only read.
 
 ## Development

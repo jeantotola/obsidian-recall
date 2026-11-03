@@ -159,14 +159,24 @@ Git is the review mechanism, the history and the safety net.
 - **.gitignore.** `/setup` adds `.srs/session.json`, `.obsidian/workspace*.json` and `.trash/`.
 - **Subfolders.** The vault may be a subfolder of a larger repository; Recall reads and commits only inside it.
 
-## The hook
+## The hooks
 
-`hooks/guard.py` runs before every Edit, Write and Bash call:
+Two hooks are registered in `hooks/hooks.json`.
+
+**The guard.** `hooks/guard.py` runs before every Edit, Write and Bash call:
 
 - It denies direct edits to `.srs/`.
 - While a session is open, it allows edits to Markdown notes outside hidden folders without a permission prompt, and records each file in the session. The git diff is the review, so this behaves the same in every permission mode.
 - It allows Bash to run the plugin's own `srs.py` without a prompt, but only when the command is exactly that script, with no shell operators, redirections or substitutions.
 - In any other case it gives no opinion, and in folders where Recall isn't set up it does nothing.
+
+**The welcome message.** A `SessionStart` hook with the matcher `startup` runs `srs.py welcome`, so it fires on a new session and not on resume, clear or compact. The command prints JSON with a `systemMessage`, which is shown to you directly: the model is not involved, so it costs no tokens and no delay.
+
+- Lines, showing only what applies: an interrupted session first, detected by `.srs/session.json` existing, with the advice to run a Recall command; then the day's status; then `/quiz` if there is something to ask; then `/integrate` if the inbox has blocks, with the first three titles, newest first as `/integrate` takes them, and `+N` for the rest.
+- The day's status comes from `daily_list` and the log. With questions to ask and no answer today, it gives the total, split into reviews (learning, relearning, updated and review concepts) and new concepts, leaving out a zero. After some answers it gives what is left. With nothing left to ask, it gives the day's score, or without answers today, when the next quiz is, from `next_due`, which runs the real daily list for the coming days. When the pace lets nothing through, such as a queue of new concepts with `new_per_day` at 0, it says so instead of promising a date.
+- It reads the vault's files and nothing else: no writes, and no git, which is slow on some filesystems.
+- It can't break a session start. Any exception means no output and exit code 0, and so does a folder where Recall isn't set up. The folder comes from `cwd` in the hook's input, then `CLAUDE_PROJECT_DIR`, then the current directory.
+- `language` is free text, so a value that contains "portugu" or starts with "pt", in any case, gets Portuguese, and any other value gets English. These are the only strings Recall ships in a language other than English, because no model is there to translate them.
 
 ## Portability
 
@@ -174,7 +184,7 @@ Git is the review mechanism, the history and the safety net.
 - **Roles, not names.** The inbox, the index, the new-pages folder, the new-page placement and the inbox heading level are configuration. `/setup` warns about existing files or folders with similar names, such as an `Inbox/` folder.
 - **Exclusions.** Recall always ignores the inbox, the index, `CLAUDE.md` and `AGENTS.md` files, and hidden folders. The `exclude` list adds patterns: `folder/` for a folder, `*.excalidraw.md` for file names anywhere, `Daily/*.md` for paths.
 - **Preferences are editable defaults.** The conversation language, the concept language and the quiz rules.
-- **English everywhere it's published.** Skills, script, commit messages and documentation are in English; Claude talks to you in the configured language.
+- **English everywhere it's published.** Skills, script, commit messages and documentation are in English; Claude talks to you in the configured language. The welcome message's Portuguese strings are the one exception (see The hooks).
 - **Requirements.** Claude Code, git and Python 3.8 or later, standard library only. Targets macOS, Linux and WSL; native Windows is untested.
 
 ## To revisit

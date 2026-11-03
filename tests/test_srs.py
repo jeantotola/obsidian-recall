@@ -1322,6 +1322,282 @@ class QuestionCountTest(VaultCase):
         self.assertIn("without a count", skill)
 
 
+class WelcomeTest(VaultCase):
+    """The SessionStart message: `srs.py welcome`, read-only, silent on any problem."""
+
+    DAY = "2026-01-11"
+    NAMES = ("Eigenvectors", "Eigenvalues", "Bayes' theorem")
+
+    def setUp(self):
+        super().setUp()
+        self.index("## [[Eigendecomposition]]\n- Eigenvectors\n- Eigenvalues\n\n## [[Bayes]]\n- Bayes' theorem\n"
+                   "- Fresh\n- Other\n")
+        self.set_config(language="English")
+        self.write("inbox.md", "")
+
+    def set_config(self, **values):
+        path = self.vault / ".srs/config.json"
+        config = json.loads(path.read_text(encoding="utf-8"))
+        config.update(values)
+        path.write_text(json.dumps(config), encoding="utf-8")
+
+    def add(self, *names, today="2026-01-10"):
+        self.srs("add", "--source", "integrate", *names, today=today)
+
+    def run_welcome(self, stdin=None, cwd=None, env_extra=None, today=None):
+        payload = json.dumps({"cwd": str(self.vault)}) if stdin is None else stdin
+        env = {k: v for k, v in self.env.items() if k != "CLAUDE_PROJECT_DIR"}
+        env["RECALL_TODAY"] = today or self.DAY
+        env.update(env_extra or {})
+        return subprocess.run([sys.executable, str(SRS), "welcome"], input=payload.encode("utf-8"),
+                              cwd=str(cwd or self.tmp), env=env, capture_output=True)
+
+    def welcome(self, **kwargs):
+        proc = self.run_welcome(**kwargs)
+        self.assertEqual((proc.returncode, proc.stderr), (0, b""))
+        return json.loads(proc.stdout.decode("utf-8"))["systemMessage"]
+
+    def assertSilent(self, proc):
+        self.assertEqual((proc.returncode, proc.stdout, proc.stderr), (0, b"", b""))
+
+    def test_new_concepts_with_quiz_line(self):
+        self.add(*self.NAMES)
+        self.assertEqual(self.welcome(), "Recall: today 3 questions: 3 new concepts\n  /quiz        take today's quiz")
+
+    def test_reviews_count_learning_relearning_updated_and_reviews(self):
+        self.add(*self.NAMES)
+        self.srs("record", "Eigenvectors", "fail", today=self.DAY)  # learning
+        self.srs("record", "Eigenvalues", "pass", today=self.DAY)  # review
+        self.srs("record", "Bayes' theorem", "pass", today=self.DAY)
+        self.srs("update", "Bayes' theorem", "--focus", "new part", today=self.DAY)  # on hold
+        self.add("Fresh", today=self.DAY)
+        self.assertEqual(self.welcome(today="2026-01-12").splitlines()[0],
+                         "Recall: today 4 questions: 3 reviews, 1 new concept")
+
+    def test_singular_forms_in_english(self):
+        self.add("Eigenvectors")
+        self.assertEqual(self.welcome().splitlines()[0], "Recall: today 1 question: 1 new concept")
+        self.srs("record", "Eigenvectors", "fail", today=self.DAY)
+        self.assertEqual(self.welcome(today="2026-01-12").splitlines()[0], "Recall: today 1 question: 1 review")
+
+    def test_singular_forms_in_portuguese(self):
+        self.set_config(language="Português")
+        self.add("Eigenvectors")
+        self.assertEqual(self.welcome().splitlines()[0], "Recall: hoje 1 pergunta: 1 concept novo")
+        self.srs("record", "Eigenvectors", "fail", today=self.DAY)
+        self.assertEqual(self.welcome(today="2026-01-12").splitlines()[0], "Recall: hoje 1 pergunta: 1 revisão")
+
+    def test_plurals_and_zero_parts_in_portuguese(self):
+        self.set_config(language="pt-BR")
+        self.add(*self.NAMES)
+        for name in self.NAMES:
+            self.srs("record", name, "fail", today=self.DAY)
+        self.add("Fresh", "Other", today=self.DAY)
+        self.assertEqual(self.welcome(today="2026-01-12"),
+                         "Recall: hoje 5 perguntas: 3 revisões, 2 concepts novos\n"
+                         "  /quiz        fazer o quiz de hoje")
+        self.set_config(language="Portuguese")
+        self.srs("remove", "Fresh", today="2026-01-12")
+        self.srs("remove", "Other", today="2026-01-12")
+        self.assertEqual(self.welcome(today="2026-01-12").splitlines()[0], "Recall: hoje 3 perguntas: 3 revisões")
+
+    def test_language_choice(self):
+        for value, expected in (("Português", "pt"), ("PORTUGUESE", "pt"), ("pt", "pt"), ("PT-BR", "pt"),
+                                (" portugues ", "pt"), ("Brazilian Portuguese", "pt"), ("português do Brasil", "pt"),
+                                ("English", "en"), ("Español", "en"), ("", "en"),
+                                (None, "en"), (5, "en")):
+            self.assertIs(srs.welcome_strings(value), srs.WELCOME_STRINGS[expected], value)
+        self.assertEqual(srs.WELCOME_STRINGS["pt"].keys(), srs.WELCOME_STRINGS["en"].keys())
+
+    def test_partly_done_shows_what_remains(self):
+        self.add(*self.NAMES)
+        self.srs("record", "Eigenvectors", "pass", today=self.DAY)
+        self.assertEqual(self.welcome(), "Recall: 2 questions left today: 2 new concepts\n"
+                                         "  /quiz        continue today's quiz")
+        self.srs("record", "Eigenvalues", "pass", today=self.DAY)
+        self.assertEqual(self.welcome().splitlines()[0], "Recall: 1 question left today: 1 new concept")
+        self.set_config(language="pt")
+        self.assertEqual(self.welcome(), "Recall: hoje falta 1 pergunta: 1 concept novo\n"
+                                         "  /quiz        continuar o quiz de hoje")
+
+    def test_quiz_done_shows_the_score(self):
+        self.add(*self.NAMES)
+        self.srs("record", "Eigenvectors", "fail", today=self.DAY)
+        self.srs("record", "Eigenvalues", "pass", today=self.DAY)
+        self.srs("record", "Bayes' theorem", "pass", today=self.DAY)
+        self.assertEqual(self.welcome(), "Recall: today's quiz done: 2/3")
+        self.set_config(language="Português")
+        self.assertEqual(self.welcome(), "Recall: quiz de hoje feito: 2/3")
+
+    def test_nothing_to_ask_says_when_the_next_review_is(self):
+        self.add("Eigenvectors")
+        self.srs("record", "Eigenvectors", "pass", today=self.DAY)  # due 2026-01-12
+        self.assertEqual(self.welcome(today="2026-01-11"), "Recall: today's quiz done: 1/1")
+        state = json.loads((self.vault / ".srs/state.json").read_text(encoding="utf-8"))
+        state["concepts"]["Eigenvectors"].update(due="2026-01-20", last="2026-01-05")
+        (self.vault / ".srs/state.json").write_text(json.dumps(state), encoding="utf-8")
+        self.assertEqual(self.welcome(today="2026-01-19"), "Recall: nothing to ask today. Next quiz tomorrow")
+        self.assertEqual(self.welcome(today="2026-01-15"), "Recall: nothing to ask today. Next quiz in 5 days")
+        self.set_config(language="Português")
+        self.assertEqual(self.welcome(today="2026-01-19"), "Recall: nada para hoje. Próximo quiz amanhã")
+        self.assertEqual(self.welcome(today="2026-01-15"), "Recall: nada para hoje. Próximo quiz em 5 dias")
+
+    def set_pace(self, **values):
+        config = json.loads((self.vault / ".srs/config.json").read_text(encoding="utf-8"))
+        config["scheduling"].update(values)
+        self.set_config(scheduling=config["scheduling"])
+
+    def test_a_queue_at_pace_zero_never_promises_a_quiz(self):
+        self.add("Eigenvectors", "Eigenvalues")
+        self.set_pace(new_per_day=0)
+        self.assertEqual(self.welcome(), "Recall: nothing to ask today. 2 concepts waiting, but the daily pace is 0 "
+                                         "(change it with /config)")
+        self.set_config(language="pt")
+        self.assertEqual(self.welcome(), "Recall: nada para hoje. 2 concepts aguardando, mas o ritmo diário está em 0 "
+                                         "(mude com /config)")
+        self.assertIn("nothing will come at this pace", self.srs("due", today=self.DAY).stdout)
+
+    def test_pace_zero_still_promises_the_reviews_that_will_come(self):
+        self.add("Eigenvectors", "Eigenvalues")
+        self.srs("record", "Eigenvectors", "pass", today=self.DAY)  # due 2026-01-12
+        self.set_pace(new_per_day=0)
+        state = json.loads((self.vault / ".srs/state.json").read_text(encoding="utf-8"))
+        state["concepts"]["Eigenvectors"].update(due="2026-01-20")
+        (self.vault / ".srs/state.json").write_text(json.dumps(state), encoding="utf-8")
+        self.assertEqual(self.welcome(today="2026-01-15"), "Recall: nothing to ask today. Next quiz in 5 days")
+
+    def test_nothing_scheduled(self):
+        self.assertEqual(self.welcome(), "Recall: no reviews scheduled")
+        self.set_config(language="pt")
+        self.assertEqual(self.welcome(), "Recall: nenhuma revisão agendada")
+
+    def test_inbox_line_singular_plural_and_newest_first(self):
+        self.write("inbox.md", "Intro.\n\n## MLflow\none\n")
+        self.assertEqual(self.welcome().splitlines()[1], "  /integrate   1 block in the inbox: MLflow")
+        self.write("inbox.md", "## MLflow\none\n\n## URI e URL\ntwo\n")
+        self.assertEqual(self.welcome().splitlines()[1], "  /integrate   2 blocks in the inbox: URI e URL, MLflow")
+        self.set_config(language="Português")
+        self.assertEqual(self.welcome().splitlines()[1], "  /integrate   2 blocos no inbox: URI e URL, MLflow")
+        self.write("inbox.md", "## MLflow\none\n")
+        self.assertEqual(self.welcome().splitlines()[1], "  /integrate   1 bloco no inbox: MLflow")
+
+    def test_inbox_line_stays_short(self):
+        self.write("inbox.md", "".join(f"## B{i}\nx\n" for i in range(1, 6)) + "## " + "L" * 60 + "\nx\n")
+        line = self.welcome().splitlines()[1]
+        self.assertEqual(line, "  /integrate   6 blocks in the inbox: " + "L" * 39 + "…, B5, B4, +3")
+
+    def test_empty_or_missing_inbox_has_no_integrate_line(self):
+        self.write("inbox.md", "Only an intro, no blocks.\n")
+        self.assertNotIn("/integrate", self.welcome())
+        (self.vault / "inbox.md").unlink()
+        self.assertNotIn("/integrate", self.welcome())
+
+    def test_custom_inbox_path_and_heading_level(self):
+        self.set_config(paths={"inbox": "Notes/in.md"}, inbox_heading_level=3)
+        self.write("Notes/in.md", "## Not a block\n### A block\nx\n")
+        self.assertIn("1 block in the inbox: A block", self.welcome())
+
+    def test_interrupted_session_comes_first(self):
+        self.add(*self.NAMES)
+        self.write("inbox.md", "## MLflow\none\n")
+        self.write(".srs/session.json", "not even json")
+        self.assertEqual(self.welcome().splitlines(), [
+            "Recall: interrupted session! Run a Recall command to recover it.",
+            "Recall: today 3 questions: 3 new concepts",
+            "  /quiz        take today's quiz",
+            "  /integrate   1 block in the inbox: MLflow",
+        ])
+        self.set_config(language="Português")
+        self.assertEqual(self.welcome().splitlines()[0],
+                         "Recall: sessão interrompida! Rode um comando do Recall para recuperá-la.")
+
+    def test_outside_a_vault_prints_nothing(self):
+        outside = self.tmp / "elsewhere"
+        outside.mkdir()
+        self.assertSilent(self.run_welcome(stdin=json.dumps({"cwd": str(outside)}), cwd=outside))
+
+    def test_folder_comes_from_stdin_then_project_dir_then_current(self):
+        outside = self.tmp / "elsewhere"
+        outside.mkdir()
+        inner = self.vault / "Math"
+        expected = "Recall: no reviews scheduled"
+        self.assertEqual(self.welcome(stdin=json.dumps({"cwd": str(inner)}), cwd=outside), expected)
+        self.assertSilent(self.run_welcome(stdin=json.dumps({"cwd": str(outside)}),
+                                           env_extra={"CLAUDE_PROJECT_DIR": str(self.vault)}, cwd=self.vault))
+        for stdin in ("", "not json", "[1]", "{}"):
+            self.assertEqual(self.welcome(stdin=stdin, env_extra={"CLAUDE_PROJECT_DIR": str(inner)}, cwd=outside), expected)
+            self.assertEqual(self.welcome(stdin=stdin, cwd=inner), expected)
+            self.assertSilent(self.run_welcome(stdin=stdin, cwd=outside))
+
+    def test_invalid_files_do_not_raise(self):
+        self.add(*self.NAMES)
+        good = {rel: (self.vault / rel).read_bytes() for rel in (".srs/state.json", ".srs/config.json", "inbox.md")}
+        for rel, bad in ((".srs/state.json", b"{broken"), (".srs/state.json", b"[1, 2]"),
+                         (".srs/state.json", b'{"concepts": {"X": {}}}'),
+                         (".srs/config.json", b"{broken"), (".srs/config.json", b"[1]"),
+                         (".srs/config.json", b'{"scheduling": {"daily_limit": "many"}}'),
+                         ("inbox.md", b"## \xff\xfe\n"), (".srs/log.csv", b"a,b\n1,2\n")):
+            (self.vault / rel).write_bytes(bad)
+            self.assertSilent(self.run_welcome())
+            if rel in good:
+                (self.vault / rel).write_bytes(good[rel])
+            else:
+                (self.vault / rel).unlink()
+        self.assertSilent(self.run_welcome(env_extra={"RECALL_TODAY": "not a date"}))
+        self.welcome()
+
+    def test_writes_nothing_and_never_calls_git(self):
+        self.add(*self.NAMES)
+        self.write("inbox.md", "## MLflow\none\n")
+        self.write(".srs/session.json", "{}")
+        files = lambda: {p: (p.stat().st_mtime_ns, p.read_bytes())
+                         for p in self.vault.rglob("*") if p.is_file() and ".git" not in p.parts}
+        before = (self.git("status", "--porcelain"), self.git("rev-parse", "HEAD"), files())
+        self.welcome()
+        self.assertEqual((self.git("status", "--porcelain"), self.git("rev-parse", "HEAD"), files()), before)
+        # A git that records being called stays uncalled.
+        fake = self.tmp / "fake-bin"
+        fake.mkdir()
+        (fake / "git").write_text("#!/bin/sh\ntouch \"$0.called\"\nexit 1\n", encoding="utf-8")
+        (fake / "git").chmod(0o755)
+        self.welcome(env_extra={"PATH": f"{fake}{os.pathsep}{os.environ['PATH']}"})
+        self.assertFalse((fake / "git.called").exists())
+
+    def hook_entry(self):
+        return json.loads((ROOT / "hooks/hooks.json").read_text(encoding="utf-8"))["hooks"]
+
+    def test_hook_entry_runs_only_at_startup_and_keeps_the_guard(self):
+        hooks = self.hook_entry()
+        self.assertEqual([(e["matcher"], [h["command"] for h in e["hooks"]]) for e in hooks["SessionStart"]],
+                         [("startup", ['python3 "${CLAUDE_PLUGIN_ROOT}/scripts/srs.py" welcome'])])
+        self.assertEqual([(e["matcher"], [h["command"] for h in e["hooks"]]) for e in hooks["PreToolUse"]],
+                         [("Edit|Write|MultiEdit|NotebookEdit|Bash", ['python3 "${CLAUDE_PLUGIN_ROOT}/hooks/guard.py"'])])
+
+    def test_hook_command_with_spaces_and_accents_in_the_paths(self):
+        plugin = self.tmp / "Área de Plugins" / "recall"
+        plugin.parent.mkdir()
+        plugin.symlink_to(ROOT, target_is_directory=True)
+        vault = self.tmp / "Área de Trabalho" / "my vault"
+        vault.parent.mkdir()
+        self.vault.rename(vault)
+        self.vault = vault
+        (vault / "Math").mkdir(exist_ok=True)
+        self.write("inbox.md", "## Fração\nx\n")
+        command = self.hook_entry()["SessionStart"][0]["hooks"][0]["command"]
+        for env in ({}, {"LC_ALL": "C", "LANG": "C"}):
+            for payload in (json.dumps({"cwd": str(vault), "source": "startup"}),
+                            json.dumps({"cwd": str(vault), "source": "startup"}, ensure_ascii=False)):
+                proc = subprocess.run(["sh", "-c", command], input=payload.encode("utf-8"), cwd=str(self.tmp),
+                                      env=dict(self.env, CLAUDE_PLUGIN_ROOT=str(plugin), RECALL_TODAY=self.DAY, **env),
+                                      capture_output=True)
+                self.assertEqual((proc.returncode, proc.stderr), (0, b""))
+                self.assertIn("1 block in the inbox: Fração", json.loads(proc.stdout.decode())["systemMessage"])
+
+    def test_docs_describe_it(self):
+        for name in ("README.md", "docs/design.md"):
+            self.assertIn("SessionStart", (ROOT / name).read_text(encoding="utf-8"), name)
+
+
 class ContextTest(VaultCase):
     def test_contexts_print_without_errors(self):
         self.index("## [[Bayes]]\n- Bayes' theorem\n")

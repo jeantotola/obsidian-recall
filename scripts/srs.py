@@ -848,22 +848,23 @@ def daily_list(state: dict, sched: dict, today: dt.date):
     return items, info
 
 
-def next_due(state: dict, today: dt.date):
-    """The next study day with something due, and how many concepts then."""
-    dates = []
+def next_due(state: dict, sched: dict, today: dt.date):
+    """The next study day whose list really has questions, and how many. (None, 0) when none
+    ever will at this pace: a queue of new concepts with new_per_day at 0 is never asked."""
+    candidates = {today + days(1)}
     for rec in state["concepts"].values():
         if rec["phase"] == "new":
             queued = parse_day(rec.get("queued"))
-            if queued:
-                dates.append(max(queued + days(1), today + days(1)))
+            day = queued + days(1) if queued else None
         else:
-            due = parse_day(rec.get("due"))
-            if due:
-                dates.append(max(due, today + days(1)))
-    if not dates:
-        return None, 0
-    first = min(dates)
-    return first, sum(1 for d in dates if d == first)
+            day = parse_day(rec.get("due"))
+        if day and day > today:
+            candidates.add(day)
+    for day in sorted(candidates):
+        items, _ = daily_list(state, sched, day)
+        if items:
+            return day, len(items)
+    return None, 0
 
 
 def new_pace(state: dict, sched: dict, today: dt.date) -> float:
@@ -2038,6 +2039,134 @@ def cmd_setup_batch(args):
         print(f"  {rel} ({len(read_text(v.root / rel))} characters)")
 
 
+# Strings of the welcome message. Pairs are (singular, plural).
+WELCOME_STRINGS = {
+    "pt": {
+        "interrupted": "Recall: sessão interrompida! Rode um comando do Recall para recuperá-la.",
+        "today": "Recall: hoje {total}: {parts}",
+        "left": ("Recall: hoje falta {total}: {parts}", "Recall: hoje faltam {total}: {parts}"),
+        "done": "Recall: quiz de hoje feito: {passed}/{answered}",
+        "next": "Recall: nada para hoje. Próximo quiz {when}",
+        "tomorrow": "amanhã",
+        "in_days": "em {n} dias",
+        "nothing": "Recall: nenhuma revisão agendada",
+        "paused": "Recall: nada para hoje. {waiting}, mas o ritmo diário está em 0 (mude com /config)",
+        "waiting": ("concept aguardando", "concepts aguardando"),
+        "quiz": "fazer o quiz de hoje",
+        "quiz_left": "continuar o quiz de hoje",
+        "inbox": "{blocks} no inbox: {titles}",
+        "question": ("pergunta", "perguntas"),
+        "review": ("revisão", "revisões"),
+        "new": ("concept novo", "concepts novos"),
+        "block": ("bloco", "blocos"),
+    },
+    "en": {
+        "interrupted": "Recall: interrupted session! Run a Recall command to recover it.",
+        "today": "Recall: today {total}: {parts}",
+        "left": ("Recall: {total} left today: {parts}", "Recall: {total} left today: {parts}"),
+        "done": "Recall: today's quiz done: {passed}/{answered}",
+        "next": "Recall: nothing to ask today. Next quiz {when}",
+        "tomorrow": "tomorrow",
+        "in_days": "in {n} days",
+        "nothing": "Recall: no reviews scheduled",
+        "paused": "Recall: nothing to ask today. {waiting}, but the daily pace is 0 (change it with /config)",
+        "waiting": ("concept waiting", "concepts waiting"),
+        "quiz": "take today's quiz",
+        "quiz_left": "continue today's quiz",
+        "inbox": "{blocks} in the inbox: {titles}",
+        "question": ("question", "questions"),
+        "review": ("review", "reviews"),
+        "new": ("new concept", "new concepts"),
+        "block": ("block", "blocks"),
+    },
+}
+WELCOME_MAX_TITLES = 3
+
+
+def welcome_strings(language) -> dict:
+    """The language setting is free text: Portuguese when it names it ("Brazilian Portuguese", "pt-BR"), else English."""
+    value = str(language or "").strip().casefold()
+    return WELCOME_STRINGS["pt" if "portugu" in value or value.startswith("pt") else "en"]
+
+
+def welcome_count(words: dict, n: int, word: str) -> str:
+    return f"{n} {words[word][0 if n == 1 else 1]}"
+
+
+def welcome_inbox(v: Vault, words: dict):
+    """The /integrate line's text, newest block first like `inbox list`; None when the inbox is empty."""
+    _, path = block_source(v, None)
+    if not path.is_file():
+        return None
+    blocks, _ = parse_blocks(read_text(path), v.config["inbox_heading_level"])
+    if not blocks:
+        return None
+
+    titles = [short(b.title, 40) for b in reversed(blocks) if b.title][:WELCOME_MAX_TITLES]
+    rest = len(blocks) - len(titles)
+    if rest:
+        titles.append(f"+{rest}")
+    return words["inbox"].format(blocks=welcome_count(words, len(blocks), "block"), titles=", ".join(titles))
+
+
+def welcome_message(v: Vault) -> str:
+    """The status shown when a session starts. Reads the vault's files only: no git, no writes."""
+    words = welcome_strings(v.config.get("language"))
+
+    state = load_state(v)
+    items, info = daily_list(state, v.sched, v.today)
+    t = v.today.isoformat()
+    rows = [r for r in read_log(v) if r["day"] == t]
+
+    lines = []
+    if session_path(v).exists():
+        lines.append(words["interrupted"])
+    if items:
+        reviews = info["learning"] + info["reviews"]
+        parts = ", ".join(welcome_count(words, n, w) for n, w in ((reviews, "review"), (info["new"], "new")) if n)
+        total = welcome_count(words, len(items), "question")
+        template = words["left"][0 if len(items) == 1 else 1] if rows else words["today"]
+        lines.append(template.format(total=total, parts=parts))
+        lines.append(f"  {'/quiz':<13}{words['quiz_left' if rows else 'quiz']}")
+    elif rows:
+        passed = sum(1 for r in rows if r["result"] == "pass")
+        lines.append(words["done"].format(passed=passed, answered=len(rows)))
+    else:
+        nxt, _ = next_due(state, v.sched, v.today)
+        if nxt is None and state["concepts"]:
+            lines.append(words["paused"].format(waiting=welcome_count(words, len(state["concepts"]), "waiting")))
+        elif nxt is None:
+            lines.append(words["nothing"])
+        else:
+            delta = (nxt - v.today).days
+            when = words["tomorrow"] if delta == 1 else words["in_days"].format(n=delta)
+            lines.append(words["next"].format(when=when))
+    inbox = welcome_inbox(v, words)
+    if inbox:
+        lines.append(f"  {'/integrate':<13}{inbox}")
+    return "\n".join(lines)
+
+
+def hook_folder() -> str:
+    """The folder a hook runs for: cwd from its stdin JSON, then the project dir, then here."""
+    cwd = None
+    try:
+        if not sys.stdin.isatty():
+            cwd = json.loads(sys.stdin.buffer.read().decode("utf-8")).get("cwd")
+    except (ValueError, AttributeError):
+        pass
+    return cwd or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+
+
+def cmd_welcome(args):
+    """SessionStart hook. Whatever goes wrong must not reach the session: no output, exit 0."""
+    try:
+        args.vault = args.vault or hook_folder()
+        print(json.dumps({"systemMessage": welcome_message(open_vault(args))}))
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Context blocks: what each skill sees before Claude reads it
 # ---------------------------------------------------------------------------
@@ -2089,9 +2218,15 @@ def render_due(v: Vault, state: dict, idx: Index) -> list:
         f"Carried over to tomorrow: {info['carried']}. New concepts still waiting: {info['new_waiting']}."
     ]
     if not items:
-        nxt, count = next_due(state, v.today)
-        out.append(f"Nothing to ask today. Next: {nxt} ({count} concept{'s' if count != 1 else ''})."
-                   if nxt else "Nothing to ask today, and nothing is scheduled.")
+        nxt, count = next_due(state, v.sched, v.today)
+        if nxt:
+            out.append(f"Nothing to ask today. Next: {nxt} ({count} concept{'s' if count != 1 else ''}).")
+        elif state["concepts"]:
+            out.append(f"Nothing to ask today, and nothing will come at this pace: {plural(len(state['concepts']), 'concept')} "
+                       f"waiting, with new_per_day at {v.sched['new_per_day']} and the daily limit at "
+                       f"{v.sched['daily_limit']}. Tell the user that /config changes the pace.")
+        else:
+            out.append("Nothing to ask today, and nothing is scheduled.")
         return out
     total = info["done"] + len(items)  # stays the same all day: each answer moves one from items to done
     out.append(f"Question count: start at {info['done'] + 1}/{total}, end at {total}/{total}.")
@@ -2510,6 +2645,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--file", help="another file with blocks, instead of the inbox")
     p.set_defaults(func=cmd_inbox)
     sub.add_parser("setup-batch", help="the next pages to index").set_defaults(func=cmd_setup_batch)
+    sub.add_parser("welcome", help="session-start status as hook JSON (read-only)").set_defaults(func=cmd_welcome)
     return parser
 
 
