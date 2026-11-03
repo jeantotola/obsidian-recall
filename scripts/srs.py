@@ -2116,6 +2116,13 @@ WELCOME_STRINGS = {
         "review": ("revisão", "revisões"),
         "new": ("concept novo", "concepts novos"),
         "block": ("bloco", "blocos"),
+        "changed": ("{pages} mudou desde a última verificação ({ago})", "{pages} mudaram desde a última verificação ({ago})"),
+        "unchecked": "{pages} sem verificação",
+        "ago_today": "hoje",
+        "ago": ("há {n} dia", "há {n} dias"),
+        "page": ("página", "páginas"),
+        "stuck": ("lacuna que não fecha", "lacunas que não fecham"),
+        "leech": ("leech", "leeches"),
     },
     "en": {
         "interrupted": "Recall: interrupted session! Run a Recall command to recover it.",
@@ -2135,9 +2142,18 @@ WELCOME_STRINGS = {
         "review": ("review", "reviews"),
         "new": ("new concept", "new concepts"),
         "block": ("block", "blocks"),
+        "changed": ("{pages} changed since the last check ({ago})", "{pages} changed since the last check ({ago})"),
+        "unchecked": "{pages} not checked yet",
+        "ago_today": "today",
+        "ago": ("{n} day ago", "{n} days ago"),
+        "page": ("page", "pages"),
+        "stuck": ("gap that won't close", "gaps that won't close"),
+        "leech": ("leech", "leeches"),
     },
 }
 WELCOME_MAX_TITLES = 3
+MAINTENANCE_PAGES = 5  # the welcome suggests /maintenance with this many pages without a valid seal
+MAINTENANCE_DAYS = 14  # or with any such page, this long after the last seal
 
 
 def welcome_strings(language) -> dict:
@@ -2164,6 +2180,36 @@ def welcome_inbox(v: Vault, words: dict):
     if rest:
         titles.append(f"+{rest}")
     return words["inbox"].format(blocks=welcome_count(words, len(blocks), "block"), titles=", ".join(titles))
+
+
+def welcome_maintenance(v: Vault, state: dict, words: dict):
+    """The /maintenance line's text, only when the command is worth running; None otherwise.
+    Any edit breaks a page's seal, so a line for every unsealed page would soon go unread.
+    The last check is the newest seal: the git log can't tell, since other commits use the prefix."""
+    idx, _ = load_index(v)
+    verified = load_verified(v)
+    pending = sum(1 for page in idx.pages if page.status == "ok" and not seal_ok(v, verified, page))
+    sealed = [day for day in (parse_day(r.get("day")) for r in verified.values()) if day]
+    age = max(0, (v.today - max(sealed)).days) if sealed else None
+    stuck = sum(1 for r in state["concepts"].values()
+                if r.get("gap") and int(r["gap"].get("fails") or 0) >= GAP_STUCK_FAILS)
+    leeches = sum(1 for r in state["concepts"].values() if int(r.get("lapses") or 0) >= v.leech_at)
+    worth_it = pending >= MAINTENANCE_PAGES or (pending and age is not None and age >= MAINTENANCE_DAYS)
+    if not (worth_it or stuck or leeches):
+        return None
+    parts = []
+    if pending:
+        pages = welcome_count(words, pending, "page")
+        if age is None:
+            parts.append(words["unchecked"].format(pages=pages))
+        else:
+            ago = words["ago_today"] if age == 0 else words["ago"][0 if age == 1 else 1].format(n=age)
+            parts.append(words["changed"][0 if pending == 1 else 1].format(pages=pages, ago=ago))
+    if stuck:
+        parts.append(welcome_count(words, stuck, "stuck"))
+    if leeches:
+        parts.append(welcome_count(words, leeches, "leech"))
+    return "; ".join(parts)
 
 
 def welcome_message(v: Vault) -> str:
@@ -2201,6 +2247,12 @@ def welcome_message(v: Vault) -> str:
     inbox = welcome_inbox(v, words)
     if inbox:
         lines.append(f"  {'/integrate':<13}{inbox}")
+    try:
+        maintenance = welcome_maintenance(v, state, words)
+    except Exception:  # a broken index or an unreadable page is /maintenance's to report, not a reason to lose the rest
+        maintenance = None
+    if maintenance:
+        lines.append(f"  {'/maintenance':<13}{maintenance}")
     return "\n".join(lines)
 
 

@@ -1604,6 +1604,103 @@ class WelcomeTest(VaultCase):
         self.set_config(language="pt")
         self.assertEqual(self.welcome(), "Recall: nenhuma revisão agendada")
 
+    def seal_pages(self, count, day="2026-01-01"):
+        names = [f"P{n}" for n in range(1, count + 1)]
+        for name in names:
+            self.write(f"Pages/{name}.md", f"# {name}\ntext\n")
+        self.index("".join(f"## [[{name}]]\n- Concept {name}\n\n" for name in names))
+        self.srs("verify", *names, today=day)
+        return names
+
+    def change_pages(self, names):
+        for name in names:
+            self.write(f"Pages/{name}.md", f"# {name}\nchanged\n")
+
+    def maintenance_line(self, **kwargs):
+        lines = [l for l in self.welcome(**kwargs).splitlines() if "/maintenance" in l]
+        return lines[0] if lines else None
+
+    def test_sealed_pages_ask_for_nothing(self):
+        self.seal_pages(6)
+        self.assertIsNone(self.maintenance_line())
+
+    def test_few_changes_recently_stay_quiet(self):
+        names = self.seal_pages(6)
+        self.change_pages(names[:4])
+        self.assertIsNone(self.maintenance_line(today="2026-01-14"))
+
+    def test_five_changed_pages_suggest_it_with_the_last_check(self):
+        names = self.seal_pages(6)
+        self.change_pages(names[:5])
+        self.assertEqual(self.maintenance_line(),
+                         "  /maintenance 5 pages changed since the last check (10 days ago)")
+        self.assertIn("(1 day ago)", self.maintenance_line(today="2026-01-02"))
+        self.assertIn("(today)", self.maintenance_line(today="2026-01-01"))
+        self.set_config(language="pt")
+        self.assertEqual(self.maintenance_line(),
+                         "  /maintenance 5 páginas mudaram desde a última verificação (há 10 dias)")
+        self.assertIn("(há 1 dia)", self.maintenance_line(today="2026-01-02"))
+        self.assertIn("(hoje)", self.maintenance_line(today="2026-01-01"))
+
+    def test_one_changed_page_suggests_it_after_two_weeks(self):
+        names = self.seal_pages(2)
+        self.change_pages(names[:1])
+        self.assertIsNone(self.maintenance_line(today="2026-01-14"))  # 13 days
+        self.assertEqual(self.maintenance_line(today="2026-01-15"),
+                         "  /maintenance 1 page changed since the last check (14 days ago)")
+        self.set_config(language="pt")
+        self.assertIn("1 página mudou desde", self.maintenance_line(today="2026-01-15"))
+
+    def test_two_weeks_without_changes_ask_for_nothing(self):
+        self.seal_pages(2)
+        self.assertIsNone(self.maintenance_line(today="2026-03-01"))
+
+    def test_a_new_page_without_a_seal_counts(self):
+        names = self.seal_pages(1)
+        self.write("Pages/New.md", "# New\n")
+        self.index(f"## [[{names[0]}]]\n- Concept {names[0]}\n\n## [[New]]\n- Fresh idea\n")
+        self.assertIn("1 page changed", self.maintenance_line(today="2026-01-20"))
+
+    def test_a_vault_never_checked_needs_five_pages(self):
+        self.assertIsNone(self.maintenance_line(today="2026-06-01"))  # 2 indexed pages, no seals
+        names = [f"P{n}" for n in range(1, 6)]
+        for name in names:
+            self.write(f"Pages/{name}.md", "text\n")
+        self.index("".join(f"## [[{name}]]\n- Concept {name}\n\n" for name in names))
+        self.assertEqual(self.maintenance_line(), "  /maintenance 5 pages not checked yet")
+        self.set_config(language="pt")
+        self.assertEqual(self.maintenance_line(), "  /maintenance 5 páginas sem verificação")
+
+    def set_records(self, **values):
+        path = self.vault / ".srs/state.json"
+        state = json.loads(path.read_text(encoding="utf-8"))
+        for record in state["concepts"].values():
+            record.update(values)
+        path.write_text(json.dumps(state), encoding="utf-8")
+
+    def test_a_gap_that_wont_close_suggests_it(self):
+        self.add("Eigenvectors")
+        self.srs("verify", "Eigendecomposition", "Bayes")
+        self.set_records(gap={"idea": "an idea", "fails": 2})
+        self.assertIsNone(self.maintenance_line())
+        self.set_records(gap={"idea": "an idea", "fails": 3})
+        self.assertEqual(self.maintenance_line(), "  /maintenance 1 gap that won't close")
+        self.set_config(language="pt")
+        self.assertEqual(self.maintenance_line(), "  /maintenance 1 lacuna que não fecha")
+
+    def test_a_leech_suggests_it_and_the_parts_join(self):
+        names = self.seal_pages(2)
+        self.change_pages(names[:1])
+        self.index("".join(f"## [[{n}]]\n- Concept {n}\n\n" for n in names) + "## [[Bayes]]\n- Eigenvectors\n- Eigenvalues\n")
+        self.add("Eigenvectors", "Eigenvalues")
+        self.set_records(lapses=8, gap={"idea": "an idea", "fails": 3})
+        self.assertEqual(self.maintenance_line(), "  /maintenance 2 pages changed since the last check (10 days ago); "
+                                                  "2 gaps that won't close; 2 leeches")
+
+    def test_a_broken_index_keeps_the_rest_of_the_message(self):
+        (self.vault / "index.md").write_bytes(b"\xff\xfe not utf-8")
+        self.assertEqual(self.welcome(), "Recall: no reviews scheduled")
+
     def test_inbox_line_singular_plural_and_newest_first(self):
         self.write("inbox.md", "Intro.\n\n## MLflow\none\n")
         self.assertEqual(self.welcome().splitlines()[1], "  /integrate   1 block in the inbox: MLflow")

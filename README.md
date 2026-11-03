@@ -77,15 +77,16 @@ Commands work by their short name when nothing else uses it; otherwise type `/re
 
 ### Welcome message
 
-A new session in the vault starts with a short status, shown directly by a `SessionStart` hook, so it costs no tokens and adds no delay:
+A new session in the vault starts with a short status, shown directly by a `SessionStart` hook, so it costs no tokens:
 
 ```text
 Recall: today 22 questions: 15 reviews, 7 new concepts
   /quiz        take today's quiz
   /integrate   2 blocks in the inbox: MLflow, Bayes nets
+  /maintenance 6 pages changed since the last check (12 days ago)
 ```
 
-It shows only what matters: what is left if you stopped mid-quiz, the score once the quiz is done, the next quiz when there is nothing to ask, and an interrupted session as the first line. An empty inbox drops the `/integrate` line. The message is in Portuguese when `language` contains "portugu" or starts with "pt", and in English otherwise. It only reads the vault's files: it doesn't run git or write anything. Outside a vault with Recall set up, it prints nothing.
+It shows only what matters: what is left if you stopped mid-quiz, the score once the quiz is done, the next quiz when there is nothing to ask, and an interrupted session as the first line. An empty inbox drops the `/integrate` line. The `/maintenance` line appears only when the command is worth running: with 5 or more pages changed or new since their last check, with any such page 14 days after the last check, or with an idea you keep missing or a leech. A changed page isn't a problem, only a reason to check. The message is in Portuguese when `language` contains "portugu" or starts with "pt", and in English otherwise. It only reads the vault's files: it doesn't run git or write anything. Outside a vault with Recall set up, it prints nothing.
 
 ### Inbox format
 
