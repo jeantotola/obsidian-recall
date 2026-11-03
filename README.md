@@ -54,10 +54,10 @@ Choose the **project** scope, so Recall's commands and hook load only in this va
 | Command | When | What it does |
 | --- | --- | --- |
 | `/integrate [n \| file]` | After studying | Plans where the inbox blocks go, then moves them into your pages with one diff and one commit per block. Ends with one question: which concepts go into review. |
-| `/quiz` | Every day | Up to 20 questions on the concepts that are due. Answer in your own words. |
-| `/promote [page or topic]` | When you have time | Moves concepts that are only in the index into the review schedule. |
-| `/maintenance` | Now and then | Checks the index and the pages, audits unsealed pages, seals the ones that pass, and removes the seals of pages that no longer exist. |
-| `/setup` | Once, then until indexed | Configures the vault and indexes existing pages. |
+| `/quiz` | Every day | Asks about the concepts that are due. Answer in your own words. `/config` sets how many questions a day. |
+| `/promote [page or topic]` | When you have time | Adds concepts from notes you already have to the quiz, such as what you wrote before Recall. |
+| `/maintenance` | Now and then | Checks that your pages match Recall's list of concepts, and reports what needs fixing. |
+| `/setup` | Once, then until your notes are covered | Configures the vault and lists the concepts your existing pages explain. |
 | `/config [change]` | When your pace changes | Shows or changes how many concepts you get per day. You can also just ask for it in the conversation. |
 
 Commands work by their short name when nothing else uses it; otherwise type `/recall:quiz` and so on. When you open a new session in the vault, Recall tells you which of them today calls for ([Welcome message](#welcome-message)).
@@ -65,7 +65,12 @@ Commands work by their short name when nothing else uses it; otherwise type `/re
 ### A day with Recall
 
 1. **Study and write.** Add blocks at the end of `inbox.md`, each starting with a `##` heading of a few words. A date in the heading is fine.
-2. **Run `/integrate`.** First Claude reads all the blocks it will process, groups the ones about the same subject (even when their titles are equal or vague) and shows a short plan: for each group, an existing page, a new page with its folder, or sections of one page, and for each block its place in didactic order: the order of the sections in a new page, or the exact point in an existing page, such as "after the section X". Answer `ok` or adjust it. Then, for each block, Claude writes the change at that point, without moving or rewriting the text already there, and shows you the git diff: groups run from the newest to the oldest, and inside a group the blocks run in the plan's order. A block that continues a page created or edited in the same session becomes a section of that page, unless the plan says otherwise. Approve each diff, ask for a change, skip the block (it stays in the inbox) or stop. At the end comes one list of the concepts it touched, each with a suggestion (review, or index only). Answer `ok` or adjust.
+2. **Run `/integrate`.** It goes in three steps, and each one waits for your answer:
+   - **The plan.** Claude groups the blocks by subject and shows where each group goes: an existing page, a new page or sections of one page. Inside a group, blocks follow a didactic order. Answer `ok` or adjust it.
+   - **One diff per block.** Claude adds the block at its place in the plan, without rewriting what's already there, and shows you the git diff. Groups run from the newest to the oldest. Approve, ask for a change, skip the block (it stays in the inbox) or stop.
+   - **What goes into the quiz.** A final list of the concepts it touched, each with a suggestion: review it, or just keep it on record. Answer `ok` or adjust.
+
+   [The design](docs/design.md#integrate) has the details.
 3. **Tomorrow, run `/quiz`.** One question per due concept, asked from its page. When you miss something, Claude notes the idea you missed. It comes back at the end of the session and in that concept's next questions, until you get it right at least 3 days later.
 
 `/integrate 3` processes only the three newest blocks; `/integrate path/to/old-diary.md` integrates another file block by block, the same way.
