@@ -2271,7 +2271,8 @@ def cmd_welcome(args):
     """SessionStart hook. Whatever goes wrong must not reach the session: no output, exit 0."""
     try:
         args.vault = args.vault or hook_folder()
-        print(json.dumps({"systemMessage": welcome_message(open_vault(args))}))
+        # The leading newline keeps the first line apart from the label the host prints before it.
+        print(json.dumps({"systemMessage": "\n" + welcome_message(open_vault(args))}))
     except Exception:
         pass
 

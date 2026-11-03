@@ -1488,7 +1488,9 @@ class WelcomeTest(VaultCase):
     def welcome(self, **kwargs):
         proc = self.run_welcome(**kwargs)
         self.assertEqual((proc.returncode, proc.stderr), (0, b""))
-        return json.loads(proc.stdout.decode("utf-8"))["systemMessage"]
+        message = json.loads(proc.stdout.decode("utf-8"))["systemMessage"]
+        self.assertTrue(message.startswith("\nRecall: "), message)  # apart from the host's label
+        return message[1:]
 
     def assertSilent(self, proc):
         self.assertEqual((proc.returncode, proc.stdout, proc.stderr), (0, b"", b""))
