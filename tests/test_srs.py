@@ -1950,6 +1950,65 @@ class StatsTest(VaultCase):
         self.assertIn("Too few reviews to calibrate yet.", out)
 
 
+class FlagTest(VaultCase):
+    """/quiz flags thin pages and misplaced concepts; /maintenance reports both."""
+
+    def setUp(self):
+        super().setUp()
+        self.index("## [[Eigendecomposition]]\n- Eigenvectors\n- Matrix norm\n")
+
+    def flags(self):
+        return json.loads((self.vault / ".srs/state.json").read_text(encoding="utf-8"))["flags"]
+
+    def test_thin_flag_still_works(self):
+        self.srs("flag", "Math/Bayes.md")
+        self.assertEqual(self.flags()["thin"], {"Math/Bayes.md": "2026-01-10"})
+        self.assertEqual(self.flags()["misplaced"], {})
+        self.assertIn("Pages flagged as thin by /quiz: 1", self.srs("check").stdout)
+        self.srs("unflag", "Math/Bayes.md")
+        self.assertEqual(self.flags()["thin"], {})
+
+    def test_misplaced_flag_is_stored_reported_and_removed(self):
+        out = self.srs("flag", "Math/Eigendecomposition.md", "--misplaced", "matrix norm", "--to", "Linear algebra")
+        self.assertIn("Matrix norm", out.stdout)
+        self.assertEqual(self.flags()["misplaced"],
+                         {"Matrix norm": {"page": "Math/Eigendecomposition.md", "to": "Linear algebra", "day": "2026-01-10"}})
+        self.assertEqual(self.flags()["thin"], {})
+        report = self.srs("check").stdout
+        self.assertIn("Concepts flagged as misplaced by /quiz: 1", report)
+        self.assertIn("Matrix norm: defined on Math/Eigendecomposition.md, belongs in Linear algebra", report)
+        self.srs("unflag", "Math/Eigendecomposition.md", "--misplaced", "Matrix norm")
+        self.assertEqual(self.flags()["misplaced"], {})
+        self.assertIn("Concepts flagged as misplaced by /quiz: none", self.srs("check").stdout)
+
+    def test_misplaced_flag_without_a_destination(self):
+        self.srs("flag", "Math/Eigendecomposition.md", "--misplaced", "Matrix norm")
+        self.assertIn("Matrix norm: defined on Math/Eigendecomposition.md (flagged 2026-01-10)", self.srs("check").stdout)
+
+    def test_misplaced_flag_needs_an_indexed_concept_and_a_page(self):
+        bad = self.srs("flag", "Math/Eigendecomposition.md", "--misplaced", "Ghost", check=False)
+        self.assertEqual(bad.returncode, 2)
+        self.assertIn("not in the index", bad.stderr + bad.stdout)
+        bad = self.srs("flag", "Math/Nope.md", "--misplaced", "Matrix norm", check=False)
+        self.assertEqual(bad.returncode, 2)
+        bad = self.srs("flag", "Math/Eigendecomposition.md", "--to", "Somewhere", check=False)
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertEqual(self.flags()["misplaced"], {})
+
+    def test_state_without_the_new_flag_type_still_loads(self):
+        path = self.vault / ".srs/state.json"
+        state = json.loads(path.read_text(encoding="utf-8"))
+        state["flags"] = {"thin": {"Math/Bayes.md": "2026-01-01"}}
+        path.write_text(json.dumps(state), encoding="utf-8")
+        self.assertIn("Concepts flagged as misplaced by /quiz: none", self.srs("check").stdout)
+        self.srs("flag", "Math/Eigendecomposition.md", "--misplaced", "Matrix norm")
+        self.assertEqual(sorted(self.flags()["thin"]), ["Math/Bayes.md"])
+
+    def test_unflagging_an_unknown_concept_changes_nothing(self):
+        out = self.srs("unflag", "Math/Eigendecomposition.md", "--misplaced", "Matrix norm")
+        self.assertIn("was not flagged as misplaced", out.stdout)
+
+
 class IntegrateOrderTest(unittest.TestCase):
     """The skill, the README and the design describe the same order of blocks."""
 

@@ -522,14 +522,16 @@ def load_index(v: Vault):
 
 
 def empty_state() -> dict:
-    return {"version": 1, "next_order": 1, "concepts": {}, "flags": {"thin": {}}}
+    return {"version": 1, "next_order": 1, "concepts": {}, "flags": {"thin": {}, "misplaced": {}}}
 
 
 def load_state(v: Vault) -> dict:
     state = read_json(v.srs / "state.json", empty_state())
     state.setdefault("concepts", {})
     state.setdefault("next_order", 1)
-    state.setdefault("flags", {}).setdefault("thin", {})
+    flags = state.setdefault("flags", {})
+    flags.setdefault("thin", {})
+    flags.setdefault("misplaced", {})
     return state
 
 
@@ -1271,6 +1273,8 @@ def run_checks(v: Vault) -> dict:
         "unverified": [],
         "stale_seals": stale_seals(v, verified),
         "thin": sorted(state["flags"]["thin"].items()),
+        "misplaced": sorted((name, f.get("page", ""), f.get("to", ""), f.get("day", ""))
+                            for name, f in state["flags"]["misplaced"].items()),
         "leeches": [],
         "stuck_gaps": [],
         "index": idx,
@@ -1309,6 +1313,10 @@ def format_checks(v: Vault, report: dict, only=None) -> list:
             return f"[[{page.link}]] (index line {page.line}): ambiguous, use the path: {', '.join(page.candidates)}"
         return f"[[{page.link}]] (index line {page.line}): points to an excluded file ({page.path})"
 
+    def misplaced_line(x):
+        name, page, to, day = x
+        return f"{name}: defined on {page}" + (f", belongs in {to}" if to else "") + f" (flagged {day})"
+
     sections = [
         ("over_size", f"Pages over {limits['page_max_chars']} characters", lambda x: f"{x[0]} ({x[1]} characters)"),
         ("duplicates", "Concept names used on more than one page", lambda x: f"{x[0]}: {', '.join(x[1])}"),
@@ -1321,6 +1329,7 @@ def format_checks(v: Vault, report: dict, only=None) -> list:
         ("unverified", "Indexed pages without a valid seal", lambda p: p.path),
         ("stale_seals", "Stale seals (the file is gone or is no longer a page; /maintenance removes them)", lambda x: x),
         ("thin", "Pages flagged as thin by /quiz", lambda x: f"{x[0]} (flagged {x[1]})"),
+        ("misplaced", "Concepts flagged as misplaced by /quiz", misplaced_line),
         ("leeches", f"Leeches ({v.leech_at}+ lapses)", lambda x: f"{x[0]} ({x[1]} lapses)"),
         ("stuck_gaps", f"Gaps that won't close ({GAP_STUCK_FAILS}+ fails)", lambda x: f"{x[0]}: {x[1]} ({x[2]} fails)"),
     ]
@@ -1838,6 +1847,18 @@ def cmd_flag(args):
     rel = norm_rel(args.page)
     if not (v.root / rel).exists():
         raise SrsError(f"No such page: {rel}", 2)
+    if args.to and not args.misplaced:
+        raise SrsError('--to goes with --misplaced: srs.py flag "<page>" --misplaced "<Concept>" --to "<where it belongs>".')
+    if args.misplaced:
+        idx, _ = load_index(v)
+        owners = idx.by_key().get(norm_key(args.misplaced))
+        if not owners:
+            raise SrsError(f"'{args.misplaced}' is not in the index.", 2)
+        name = owners[0].name
+        state["flags"]["misplaced"][name] = {"page": rel, "to": short(args.to or "", 120), "day": v.today.isoformat()}
+        save_state(v, state)
+        print(f"Flagged {name} as misplaced on {rel}; /maintenance will report it.")
+        return
     state["flags"]["thin"][rel] = v.today.isoformat()
     save_state(v, state)
     print(f"Flagged {rel} as thin; /maintenance will report it.")
@@ -1846,6 +1867,16 @@ def cmd_flag(args):
 def cmd_unflag(args):
     v = open_vault(args)
     state = load_state(v)
+    if args.misplaced:
+        key = norm_key(args.misplaced)
+        found = [name for name in state["flags"]["misplaced"] if norm_key(name) == key]
+        if not found:
+            print(f"{args.misplaced} was not flagged as misplaced.")
+            return
+        del state["flags"]["misplaced"][found[0]]
+        save_state(v, state)
+        print(f"Removed the misplaced flag from {found[0]}.")
+        return
     rel = norm_rel(args.page)
     if state["flags"]["thin"].pop(rel, None) is None:
         print(f"{rel} was not flagged.")
@@ -2737,11 +2768,14 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("remove", help="remove a concept from the schedule")
     p.add_argument("concept")
     p.set_defaults(func=cmd_remove)
-    p = sub.add_parser("flag", help="flag a page as too thin for good questions")
+    p = sub.add_parser("flag", help="flag a page as too thin for good questions, or a concept as misplaced on it")
     p.add_argument("page")
+    p.add_argument("--misplaced", metavar="CONCEPT", help="flag this concept as defined on the wrong page")
+    p.add_argument("--to", help="with --misplaced: where the concept belongs (a page or a subject)")
     p.set_defaults(func=cmd_flag)
-    p = sub.add_parser("unflag", help="remove a thin flag")
+    p = sub.add_parser("unflag", help="remove a thin flag, or a misplaced flag")
     p.add_argument("page")
+    p.add_argument("--misplaced", metavar="CONCEPT", help="remove the misplaced flag from this concept instead")
     p.set_defaults(func=cmd_unflag)
     sub.add_parser("stats", help="retention, counts and queue").set_defaults(func=cmd_stats)
     p = sub.add_parser("config", help="show or change the daily pace (commits the change itself)")
