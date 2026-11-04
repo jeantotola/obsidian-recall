@@ -2060,6 +2060,15 @@ class QuizAsksItselfTest(unittest.TestCase):
         self.assertIn('srs.py commit -m "quiz: <score>"', skill)
         self.assertIn("Don't record these.", skill)
 
+    def test_prerequisite_and_misplaced_steps(self):
+        skill = (ROOT / "skills/quiz/SKILL.md").read_text()
+        self.assertIn('srs.py gap "<Prerequisite>"', skill)
+        self.assertIn('srs.py flag "<page path>" --misplaced "<Concept>"', skill)
+        self.assertIn("Only on approval", skill)
+        maintenance = (ROOT / "skills/maintenance/SKILL.md").read_text()
+        self.assertIn('srs.py unflag "<page>" --misplaced "<Concept>"', maintenance)
+        self.assertIn("[[Page#Concept]]", (ROOT / "skills/integrate/SKILL.md").read_text())
+
     def test_readme_and_design_describe_it(self):
         for name in ("README.md", "docs/design.md"):
             text = (ROOT / name).read_text()
