@@ -1171,6 +1171,27 @@ class GuardTest(VaultCase):
         self.assertEqual(session["touched"], ["Math/Bayes.md"])
         self.srs("end")
 
+    def test_session_commits_a_note_removed_with_rm(self):
+        self.write("Math/Old.md", "old\n")
+        self.srs("begin", "integrate")
+        bash = lambda cmd: self.guard({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(self.vault)})
+        self.assertIsNone(bash('rm "Math/Old.md"'))
+        (self.vault / "Math/Old.md").unlink()
+        self.assertIn("Committed", self.srs("commit", "-m", "integrate: drop page").stdout)
+        self.srs("end")
+        self.assertEqual(self.git("status", "--short"), "")
+        self.assertEqual(self.git("log", "-1", "--format=%s"), "integrate: drop page\n")
+
+    def test_rm_is_not_recorded_with_operators_or_outside_notes(self):
+        self.write("Math/Keep.md", "keep\n")
+        self.srs("begin", "integrate")
+        bash = lambda cmd: self.guard({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(self.vault)})
+        bash('ls && rm Math/Keep.md')
+        bash('rm data.csv .obsidian/app.json')
+        session = json.loads((self.vault / ".srs/session.json").read_text())
+        self.assertEqual(session["touched"], [])
+        self.srs("end")
+
     def test_allows_only_the_plugin_script_on_its_own(self):
         script = ROOT / "scripts" / "srs.py"
         bash = lambda cmd: self.guard({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(self.vault)})

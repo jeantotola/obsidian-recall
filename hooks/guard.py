@@ -74,6 +74,42 @@ def record_touched(session_file: Path, rel: str) -> None:
         os.replace(str(tmp), str(session_file))
 
 
+def record_removed_notes(command: str, cwd: Path) -> None:
+    """While a session is open, record the notes a plain `rm` deletes, so the session commits the removal.
+
+    Only a bare `rm [flags] file...` counts: no shell operators, substitutions or newlines. Recording
+    is harmless if the command fails, because the commit keeps only paths git sees as changed.
+    """
+    if not command or "`" in command or "$(" in command or "\n" in command.strip():
+        return
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        return
+    if not tokens or any(t and set(t) <= OPERATORS for t in tokens) or os.path.basename(tokens[0]) != "rm":
+        return
+    for raw in tokens[1:]:
+        if raw.startswith("-"):
+            continue
+        target = Path(raw)
+        if not target.is_absolute():
+            target = cwd / target
+        target = Path(os.path.realpath(str(target)))
+        vault = find_vault(target.parent) or find_vault(cwd.resolve())
+        if vault is None:
+            continue
+        try:
+            rel = target.relative_to(vault.resolve()).as_posix()
+        except ValueError:
+            continue
+        parts = rel.split("/")
+        session_file = vault / SRS_DIR / "session.json"
+        if session_file.exists() and rel.lower().endswith(".md") and not any(p.startswith(".") for p in parts):
+            record_touched(session_file, rel)
+
+
 def main() -> int:
     try:
         data = json.load(sys.stdin)
@@ -85,8 +121,11 @@ def main() -> int:
     plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT") or str(Path(__file__).resolve().parent.parent)
 
     if tool == "Bash":
-        if is_own_script(tool_input.get("command") or "", plugin_root):
+        command = tool_input.get("command") or ""
+        if is_own_script(command, plugin_root):
             decide("allow", "Recall: its own srs.py script.")
+        else:
+            record_removed_notes(command, cwd)
         return 0
 
     raw = tool_input.get("file_path") or tool_input.get("notebook_path")
