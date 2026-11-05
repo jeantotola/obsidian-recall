@@ -997,6 +997,78 @@ class ChecksTest(VaultCase):
         self.assertNotIn("Math/Bayes.md", batch)
 
 
+class FolderMapTest(VaultCase):
+    MAP = ("# Folder map\n\n| Folder | Takes | Doesn't |\n| :--- | --- | ---: |\n"
+           "| **Math** | numbers | code |\n| Gone/ | nothing | |\n{rows}\n## Tie-breaks\n\n- Math or Gone?\n")
+
+    def write_map(self, *rows):
+        self.write("folders.md", self.MAP.format(rows="".join(f"| {r} | x | y |\n" for r in rows)))
+
+    def set_placement(self, value):
+        config = json.loads((self.vault / ".srs/config.json").read_text())
+        config["new_page_placement"] = value
+        (self.vault / ".srs/config.json").write_text(json.dumps(config))
+
+    def test_rows_skip_headers_and_separators_of_every_table(self):
+        text = self.MAP.format(rows="") + "\n| Other | x |\n|---|---|\n| `Code/` | y |\n"
+        self.assertEqual(srs.folder_map_rows(text), ["Math", "Gone", "Code"])
+
+    def test_without_a_map_every_folder_with_pages_is_missing(self):
+        (self.vault / "Pictures").mkdir()
+        (self.vault / "Pictures/a.png").write_bytes(b"x")
+        report = srs_report(self.vault)
+        self.assertEqual(report["unmapped_folders"], ["Math"])  # Templates is excluded, Pictures has no pages
+        self.assertEqual(report["map_rows_without_folder"], [])
+        self.assertIn("Folder map: none (folders.md does not exist", self.srs("context", "integrate").stdout)
+
+    def test_map_rows_are_matched_to_top_level_folders(self):
+        (self.vault / "Pictures").mkdir()
+        (self.vault / "Pictures/a.png").write_bytes(b"x")
+        self.write_map("Pictures", "Lost")
+        report = srs_report(self.vault)
+        self.assertEqual(report["unmapped_folders"], [])
+        self.assertEqual(report["map_rows_without_folder"], ["Gone", "Lost"])  # Pictures exists, without pages
+        self.assertNotIn("folders.md", report["unindexed"])  # the map is not a page
+        out = self.srs("check").stdout
+        self.assertIn("Folder map rows that name no top-level folder (folders.md): 2\n  - Gone\n  - Lost", out)
+
+    def test_flat_placement_has_no_map_checks(self):
+        self.set_placement("flat")
+        report = srs_report(self.vault)
+        self.assertEqual((report["unmapped_folders"], report["map_rows_without_folder"]), ([], []))
+        self.assertNotIn("Folder map", self.srs("context", "setup").stdout)
+
+    def test_integrate_context_prints_the_map(self):
+        self.write_map()
+        out = self.srs("context", "integrate").stdout
+        self.assertIn("## Folder map (folders.md): follow it", out)
+        self.assertIn("| **Math** | numbers | code |", out)
+        self.assertIn("- Math or Gone?", out)
+
+    def test_setup_context_lists_folders_to_map_and_the_template(self):
+        out = self.srs("context", "setup").stdout
+        self.assertIn("## Folder map: folders.md DOES NOT EXIST", out)
+        self.assertIn("  Math/ — 2 pages: Bayes; Eigendecomposition", out)
+        self.assertIn("Template:\n# Folder map", out)
+        self.assertIn("at least 3 pages", out)
+        self.write("Physics/Waves.md", "# Waves\n")
+        self.write_map()
+        out = self.srs("context", "setup").stdout
+        self.assertIn("## Folder map: folders.md has no row for 1 folder", out)
+        self.assertIn("  Physics/ — 1 page: Waves", out)
+        self.assertNotIn("Template:", out)
+        self.write_map("Physics")
+        self.assertIn("Folder map: folders.md (every folder with pages has a row).", self.srs("context", "setup").stdout)
+
+    def test_init_takes_the_folder_map_path(self):
+        other = self.tmp / "other"
+        other.mkdir()
+        self.srs("init", "--git-init", "--folder-map", "Meta/Folders.md", cwd=other)
+        config = json.loads((other / ".srs/config.json").read_text())
+        self.assertEqual(config["paths"]["folder_map"], "Meta/Folders.md")
+        self.assertFalse((other / "Meta/Folders.md").exists())  # /setup drafts it
+
+
 class DiffWarningsTest(VaultCase):
     BASE = "## [[Eigendecomposition]]\n- Eigenvectors\n\n## [[Bayes]]\n- Bayes' theorem\n"
 

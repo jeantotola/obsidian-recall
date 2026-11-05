@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Set up Recall, a git-native study system, in this Obsidian vault, or continue indexing the vault's existing pages. Run once, then again until every page is indexed.
+description: Set up Recall, a git-native study system, in this Obsidian vault, draft its folder map, or continue indexing the vault's existing pages. Run once, then again until every page is indexed.
 disable-model-invocation: true
 allowed-tools:
   - Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/srs.py *)
@@ -18,14 +18,25 @@ The block above comes from Recall's script. Call the script as `python3 ${CLAUDE
 2. Ask everything in one message, showing the defaults, and accept "ok" as "defaults and suggestions":
    - the language Recall should talk to them in;
    - the language for concept names (default English);
-   - the inbox, index and new-pages paths (defaults from the block; mention any name conflict it lists);
+   - the inbox, index, new-pages and folder-map paths (defaults from the block; mention any name conflict it lists);
    - where `/integrate` puts new pages: `folders` (the default; each new page goes in the existing folder whose topic fits best, and the new-pages path is only the fallback) or `flat` (every new page goes in the new-pages path). Suggest what the block suggests: `folders` when the vault already has folders with pages;
    - the heading level that opens an inbox block (default 2; if the inbox already exists, suggest the level its headings use);
    - folders or patterns to exclude (suggest the detected ones). Patterns: `folder/` for a folder, `*.excalidraw.md` for file names anywhere;
    - the scheduling algorithm, from the list in the block, one line each: `anki` (the default) or `thirds`. Mention that the README's Scheduling section compares them and that it can be changed later in `.srs/config.json`.
-3. Run `srs.py init` with the answers: `--algorithm <name> --language "..." --concept-language "..." --inbox "..." --index "..." --new-pages "..." --new-page-placement <folders|flat> --heading-level N`, one `--exclude "..."` per pattern, and `--git-init` only if the folder has no repository and the user agreed to create one.
+3. Run `srs.py init` with the answers: `--algorithm <name> --language "..." --concept-language "..." --inbox "..." --index "..." --new-pages "..." --folder-map "..." --new-page-placement <folders|flat> --heading-level N`, one `--exclude "..."` per pattern, and `--git-init` only if the folder has no repository and the user agreed to create one.
 4. If it reports a missing git identity, show the two commands it prints and stop; the user runs them and then /setup again.
-5. Continue with indexing. The block above was computed before setup, so get the first batch from `srs.py setup-batch`.
+5. Continue with the folder map, then indexing. The block above was computed before setup, so run `srs.py context setup` for the folder map section, and get the first indexing batch from `srs.py setup-batch`.
+
+## Folder map
+
+Do this only when the block (or `srs.py context setup`, right after init) has a "Folder map" section that lists folders; otherwise go to indexing.
+
+1. If the block reports an INTERRUPTED SESSION, resolve it first as it says. Then `srs.py begin setup`.
+2. If the map does not exist, write it at the path the block gives, from the template in the block, in the language Recall talks to the user in. If it exists, only add the missing rows and leave the rest as it is.
+3. Write one row per listed folder, with the name exactly as listed. Take each scope from what the folder holds, its page names (read a page when the names leave it unclear), not from the folder name alone. In the last column, name the folder that takes what doesn't belong. Add one tie-break question for each pair of folders that could both take a page. Keep the section on new folders as the template has it.
+4. Pages that look misplaced: list them in the chat, and don't move them. Write the scopes for where pages belong, not to fit the misplaced ones.
+5. Run `srs.py diff` and show the diff in a ```diff block. Say in one line that the scopes, the tie-breaks and the numbers in the rules for new folders, such as the 3-page minimum for a new top-level folder, are theirs to edit in the file. Ask: ok, change or stop.
+6. On "ok": `srs.py commit -m "setup: folder map"`. On a change request: edit, then show the new diff. On "stop": `srs.py discard`. Then `srs.py end`, and go on to indexing.
 
 ## Indexing existing pages
 

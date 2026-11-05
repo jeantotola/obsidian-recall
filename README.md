@@ -139,6 +139,30 @@ Claude Code can suggest your next reply in the input line, and during a quiz tha
 - A page lists only the concepts it explains. Each concept has one owner page, and names are unique across the index.
 - Concepts are glossary-sized: "Eigenvectors", not "Linear algebra".
 
+## The folder map
+
+With `new_page_placement` set to `folders`, `/integrate` picks a folder for each new page. Folder names alone often leave it guessing, so `/setup` drafts `folders.md`, a map of what each top-level folder takes:
+
+```markdown
+| Folder | What goes in | What doesn't, and where it goes |
+| --- | --- | --- |
+| Computer Science | How computing works: algorithms, data structures, networks | Tools and operations (Systems Engineering) |
+| Systems Engineering | Building and running software: environments, containers, cloud | How the technology works inside (Computer Science) |
+
+## Tie-breaks
+
+- Computer Science or Systems Engineering? How it works, or how to use it.
+
+## New folders
+
+- New top-level folder: only when at least 3 pages that fit no folder are expected.
+```
+
+- One row per top-level folder, its name exactly as on disk in the first column. `/maintenance` reports folders without a row and rows without a folder.
+- The map is yours: edit the scopes, the tie-breaks and the rules for new folders, including the 3-page minimum, whenever you like. `/integrate` reads the current file each time.
+- When `/integrate` creates a top-level folder, it adds the folder's row to the map in the same diff.
+- Run `/setup` again to draft the rows that are missing.
+
 ## Scheduling
 
 Answers are pass or fail. Each concept in the schedule has one date, the day from which it is due, and the script computes every date. Two algorithms are built in. `/setup` asks which one to use, and you can switch later in `.srs/config.json`.
@@ -182,6 +206,7 @@ To check retention, run `python3 <plugin folder>/scripts/srs.py stats` in the va
 | `paths.inbox` | `inbox.md` | Inbox page |
 | `paths.index` | `index.md` | Index page |
 | `paths.new_pages` | `wiki` | Fallback folder for new pages: where they go with `flat`, or when the vault has no thematic folders |
+| `paths.folder_map` | `folders.md` | Folder map: what each top-level folder takes, used by `/integrate` with `folders` |
 | `new_page_placement` | `folders` | `folders`: `/integrate` puts a new page in the existing folder whose topic fits best, or proposes a new folder in the vault's naming style. `flat`: every new page goes in `paths.new_pages` |
 | `inbox_heading_level` | `2` | Heading level that opens an inbox block |
 | `exclude` | `[]` | Patterns to ignore: `folder/`, `*.excalidraw.md`, `Daily/*.md` |
@@ -224,7 +249,7 @@ Parameters of `thirds`, under `scheduling.thirds`:
 | `fuzz_min_interval` | `3` | Days; shorter intervals are never spread |
 | `leech_threshold` | `10` | Lapses that flag a leech |
 
-The quiz rules live in `.srs/quiz-rules.md`, as plain text you can edit. Recall always ignores the inbox, the index, `CLAUDE.md` files and hidden folders such as `.obsidian/`, `.trash/`, `.claude/` and `.srs/`.
+The quiz rules live in `.srs/quiz-rules.md`, as plain text you can edit. Recall always ignores the inbox, the index, the folder map, `CLAUDE.md` files and hidden folders such as `.obsidian/`, `.trash/`, `.claude/` and `.srs/`.
 
 ## Files
 
@@ -234,6 +259,7 @@ In your vault:
 your-vault/
 ├── inbox.md
 ├── index.md
+├── folders.md            folder map
 ├── wiki/                 new pages
 ├── ...                   your pages, wherever they are
 ├── .gitignore            Recall adds .srs/session.json and Obsidian's workspace files

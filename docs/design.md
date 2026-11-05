@@ -10,7 +10,7 @@ Recall turns an Obsidian vault into a study system with three moving parts: an i
 2. **The concept is the key.** Concept names link the index, the schedule and the pages, so they are unique and stable.
 3. **The voice is yours.** Claude moves, links and adjusts your text as little as possible, and marks its own additions with a `> [!claude]` callout. It points out factual errors in the chat instead of fixing them silently, and never pads pages with textbook content.
 4. **State and arithmetic belong to the script.** The model never writes dates and never edits `.srs/`; it calls `srs.py`. A hook enforces this.
-5. **Integration ignores page size, and places pages by the configured placement.** With `new_page_placement` set to `folders` (the default), a new page goes in the existing folder whose topic fits best, or in a new folder that follows the vault's naming convention; the new-pages folder is the fallback for vaults with no thematic folders. With `flat`, every new page goes in the new-pages folder. Page size is checked by `/maintenance`. Integration plans the whole batch before it writes anything, so blocks on one subject end up together and no minimum page size is needed.
+5. **Integration ignores page size, and places pages by the configured placement.** With `new_page_placement` set to `folders` (the default), a new page goes in the existing folder whose topic fits best, as the folder map (`folders.md`) describes the folders, or in a new folder that follows the vault's naming convention; the new-pages folder is the fallback for vaults with no thematic folders. With `flat`, every new page goes in the new-pages folder. Page size is checked by `/maintenance`. Integration plans the whole batch before it writes anything, so blocks on one subject end up together and no minimum page size is needed.
 6. **Git-native.** Every operation ends in a commit, and no content is committed without your approval of its diff.
 
 ## Index and concepts
@@ -191,8 +191,8 @@ Two hooks are registered in `hooks/hooks.json`.
 ## Portability
 
 - **Plugin, not copied files.** Skills, script, rules, agents and hooks live in the plugin; the vault holds only configuration, state and content. Installing at project scope keeps commands and hooks out of your other projects.
-- **Roles, not names.** The inbox, the index, the new-pages folder, the new-page placement and the inbox heading level are configuration. `/setup` warns about existing files or folders with similar names, such as an `Inbox/` folder.
-- **Exclusions.** Recall always ignores the inbox, the index, `CLAUDE.md` and `AGENTS.md` files, and hidden folders. The `exclude` list adds patterns: `folder/` for a folder, `*.excalidraw.md` for file names anywhere, `Daily/*.md` for paths.
+- **Roles, not names.** The inbox, the index, the folder map, the new-pages folder, the new-page placement and the inbox heading level are configuration. `/setup` warns about existing files or folders with similar names, such as an `Inbox/` folder.
+- **Exclusions.** Recall always ignores the inbox, the index, the folder map, `CLAUDE.md` and `AGENTS.md` files, and hidden folders. The `exclude` list adds patterns: `folder/` for a folder, `*.excalidraw.md` for file names anywhere, `Daily/*.md` for paths.
 - **Preferences are editable defaults.** The conversation language, the concept language and the quiz rules.
 - **English everywhere it's published.** Skills, script, commit messages and documentation are in English; Claude talks to you in the configured language. The welcome message's Portuguese strings are the one exception (see The hooks).
 - **Requirements.** Claude Code, git and Python 3.8 or later, standard library only. Targets macOS, Linux and WSL; native Windows is untested.

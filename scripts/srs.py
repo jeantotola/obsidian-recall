@@ -29,7 +29,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-VERSION = "0.11.3"
+VERSION = "0.12.0"
 SRS_DIR = ".srs"
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 TEMPLATES = PLUGIN_ROOT / "templates"
@@ -87,7 +87,7 @@ DEFAULT_CONFIG = {
     "version": 1,
     "language": "English",
     "concept_language": "English",
-    "paths": {"inbox": "inbox.md", "index": "index.md", "new_pages": "wiki"},
+    "paths": {"inbox": "inbox.md", "index": "index.md", "new_pages": "wiki", "folder_map": "folders.md"},
     "new_page_placement": "folders",
     "inbox_heading_level": 2,
     "exclude": [],
@@ -239,6 +239,10 @@ class Vault:
         return norm_rel(self.config["paths"]["index"])
 
     @property
+    def folder_map_rel(self) -> str:
+        return norm_rel(self.config["paths"]["folder_map"])
+
+    @property
     def new_pages_rel(self) -> str:
         return norm_rel(self.config["paths"]["new_pages"])
 
@@ -329,7 +333,7 @@ def matches_pattern(rel: str, pattern: str) -> bool:
 
 
 def is_system_file(v: Vault, rel: str) -> bool:
-    return rel in (v.inbox_rel, v.index_rel) or rel.rsplit("/", 1)[-1].lower() in SYSTEM_FILE_NAMES
+    return rel in (v.inbox_rel, v.index_rel, v.folder_map_rel) or rel.rsplit("/", 1)[-1].lower() in SYSTEM_FILE_NAMES
 
 
 def is_excluded(v: Vault, rel: str) -> bool:
@@ -359,6 +363,47 @@ def folder_outline(v: Vault, depth: int = 2) -> list:
                 walk(rel, level + 1)
 
     walk("", 1)
+    return found
+
+
+TABLE_SEPARATOR = re.compile(r"^:?-+:?$")
+
+
+def folder_map_rows(text: str) -> list:
+    """Folder names from the first column of every table in the folder map,
+    leaving out each table's header and separator rows."""
+    names, in_table = [], False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            in_table = False
+            continue
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        if not in_table:  # the header row
+            in_table = True
+            continue
+        if all(TABLE_SEPARATOR.match(c) for c in cells if c):
+            continue
+        name = cells[0].strip("*_` ").rstrip("/").strip()
+        if name:
+            names.append(name)
+    return names
+
+
+def folder_map_checks(v: Vault) -> dict:
+    """With folders placement: top-level folders that hold pages but have no row in
+    the folder map, and rows that name no top-level folder. Without a map file,
+    every folder with pages is reported as missing."""
+    found = {"unmapped_folders": [], "map_rows_without_folder": []}
+    if v.placement != "folders":
+        return found
+    top = dict(folder_outline(v, depth=1))
+    path = v.root / v.folder_map_rel
+    rows = folder_map_rows(read_text(path)) if path.is_file() else []
+    mapped = {r.casefold() for r in rows}
+    found["unmapped_folders"] = [rel for rel, n in top.items() if n and rel.casefold() not in mapped]
+    existing = {rel.casefold() for rel in top}
+    found["map_rows_without_folder"] = [r for r in rows if r.casefold() not in existing]
     return found
 
 
@@ -1280,6 +1325,7 @@ def run_checks(v: Vault) -> dict:
         "index": idx,
     }
     report.update(index_checks(v, idx))
+    report.update(folder_map_checks(v))
     dup_pages = {e.page.path for entries in idx.by_key().values() if len(entries) > 1 for e in entries}
     for page in idx.pages:
         if page.status == "ok":
@@ -1332,6 +1378,9 @@ def format_checks(v: Vault, report: dict, only=None) -> list:
         ("misplaced", "Concepts flagged as misplaced by /quiz", misplaced_line),
         ("leeches", f"Leeches ({v.leech_at}+ lapses)", lambda x: f"{x[0]} ({x[1]} lapses)"),
         ("stuck_gaps", f"Gaps that won't close ({GAP_STUCK_FAILS}+ fails)", lambda x: f"{x[0]}: {x[1]} ({x[2]} fails)"),
+        ("unmapped_folders", f"Folders with pages but no row in the folder map ({v.folder_map_rel})", lambda x: x),
+        ("map_rows_without_folder", f"Folder map rows that name no top-level folder ({v.folder_map_rel})",
+         lambda x: x),
     ]
     out = []
     for key, title, render in sections:
@@ -1400,6 +1449,8 @@ def cmd_init(args):
         config["paths"]["index"] = norm_rel(args.index)
     if args.new_pages:
         config["paths"]["new_pages"] = norm_rel(args.new_pages)
+    if args.folder_map:
+        config["paths"]["folder_map"] = norm_rel(args.folder_map)
     if args.new_page_placement:
         config["new_page_placement"] = args.new_page_placement
     if args.heading_level:
@@ -2417,7 +2468,9 @@ def context_setup(args) -> list:
         for key, default in DEFAULT_CONFIG["paths"].items():
             target = start / default
             exists = target.exists()
-            line = f"  {key}: {default} — {'exists' if exists else 'will be created' if key != 'new_pages' else 'created on first use'}"
+            line = f"  {key}: {default} — " + ("exists" if exists else {"new_pages": "created on first use",
+                                                                          "folder_map": "drafted by /setup after init"}
+                                                .get(key, "will be created"))
             if key == "inbox" and exists and target.is_file():
                 counts = heading_counts(read_text(target))
                 if counts:
@@ -2465,9 +2518,39 @@ def context_setup(args) -> list:
         out.append("Every content page is indexed.")
     out.append(f"Index file: {v.index_rel} ({len(idx.pages)} pages, {sum(1 for _ in idx.concepts())} concepts)")
     out.append(f"Description limit: {v.limits['description_max_chars']} characters.")
+    out += folder_map_setup_lines(v)
     out.append("")
     out.append("## Rules")
     out.append(rules_text())
+    return out
+
+
+def folder_map_setup_lines(v: Vault) -> list:
+    """What /setup needs to draft the folder map: nothing when placement is flat,
+    one line when the map is complete; otherwise the folders to map, with their
+    page names, and the template when the map does not exist yet."""
+    if v.placement != "folders":
+        return []
+    exists = (v.root / v.folder_map_rel).is_file()
+    missing = folder_map_checks(v)["unmapped_folders"]
+    if exists and not missing:
+        return [f"Folder map: {v.folder_map_rel} (every folder with pages has a row)."]
+    if not missing:
+        return [f"Folder map: none yet ({v.folder_map_rel}); no folder has pages, so there is nothing to map."]
+    out = [""]
+    if exists:
+        out.append(f"## Folder map: {v.folder_map_rel} has no row for {plural(len(missing), 'folder')}")
+    else:
+        out.append(f"## Folder map: {v.folder_map_rel} DOES NOT EXIST")
+    pages = content_pages(v)
+    for folder in missing:
+        names = [p[len(folder) + 1:-3] for p in pages if p.startswith(folder + "/")]
+        out.append(f"  {folder}/ — {plural(len(names), 'page')}: " + "; ".join(names[:15])
+                   + ("; ..." if len(names) > 15 else ""))
+    if not exists:
+        out.append("")
+        out.append("Template:")
+        out.append(read_text(TEMPLATES / "folders.md").rstrip("\n"))
     return out
 
 
@@ -2540,6 +2623,14 @@ def context_integrate(v: Vault, extra: list) -> list:
         out += [f"  {'  ' * rel.count('/')}{rel.rsplit('/', 1)[-1]}/ — {plural(n, 'page')}" for rel, n in outline]
         if not outline:
             out.append("  (no folders)")
+        out.append("")
+        map_path = v.root / v.folder_map_rel
+        if map_path.is_file():
+            out.append(f"## Folder map ({v.folder_map_rel}): follow it to place new pages and propose new folders")
+            out.append(read_text(map_path).rstrip("\n"))
+        else:
+            out.append(f"## Folder map: none ({v.folder_map_rel} does not exist; /setup drafts it). "
+                       "Pick folders by their names.")
     out.append("")
     out.append(f"Description limit: {v.limits['description_max_chars']} characters.")
     out.append("")
@@ -2711,6 +2802,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--inbox")
     p.add_argument("--index")
     p.add_argument("--new-pages")
+    p.add_argument("--folder-map")
     p.add_argument("--new-page-placement", choices=list(PLACEMENTS),
                    help="where /integrate puts new pages (default: folders)")
     p.add_argument("--heading-level", type=int)
