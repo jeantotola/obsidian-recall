@@ -120,9 +120,10 @@ If a session closes in the middle of a command, the next command shows what was 
 
 ### Suggestions during /quiz
 
-Claude Code can suggest your next reply in the input line, and during a quiz that suggestion can show the answer. So `/quiz` turns suggestions off when it starts and puts your previous setting back when it ends, by changing `promptSuggestionEnabled` in the vault's `.claude/settings.local.json`. Recall never commits this file, and removes it afterwards if it created it.
+Claude Code can suggest your next reply in the input line, and during a quiz that suggestion can show the answer. So `/quiz` turns suggestions off in this vault by setting `promptSuggestionEnabled` to false in the vault's `.claude/settings.local.json`, and leaves it off. Recall never commits this file. Other projects keep their own setting.
 
-- If a session closes in the middle of a quiz, suggestions stay off in this vault until the next Recall command recovers the session.
+- Claude Code reads this setting only when it starts. The first time, `/quiz` tells you that suggestions stay on in the current session: turn them off in `/config` (for every project), or restart Claude Code in the vault. From the next session on they are off.
+- To have suggestions back in the vault, remove the key from that file.
 - If `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION` is set to true, it overrides this setting, and `/quiz` tells you to turn it off where it is defined.
 
 ## The index

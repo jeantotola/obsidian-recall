@@ -1212,10 +1212,13 @@ def write_local_settings(path: Path, data: dict) -> None:
     os.replace(str(tmp), str(path))
 
 
-def hide_suggestions(v: Vault):
-    """Turn prompt suggestions off for a quiz: they can show the answer in the input line.
+def hide_suggestions(v: Vault) -> list:
+    """Turn prompt suggestions off in this vault: they can show a quiz answer in the input line.
 
-    Returns what restore_suggestions needs (None when nothing changed) and notes for the user.
+    Claude Code reads the setting only when it starts, so a change made here hides them from the
+    next session on, not in the one running the quiz. The setting stays off afterwards: putting it
+    back at the end of the quiz would turn suggestions on again before any quiz could benefit.
+    Returns notes for the user.
     """
     notes = []
     if os.environ.get(SUGGESTION_ENV, "").strip().lower() in ("1", "true", "yes", "on"):
@@ -1226,11 +1229,9 @@ def hide_suggestions(v: Vault):
         )
     path = v.root / LOCAL_SETTINGS
     try:
-        existed = path.exists()
         data = read_local_settings(path)
         if data.get(SUGGESTION_KEY) is False:
-            return None, notes
-        saved = {"existed": existed, "had_key": SUGGESTION_KEY in data, "value": data.get(SUGGESTION_KEY)}
+            return notes
         data[SUGGESTION_KEY] = False
         write_local_settings(path, data)
     except (OSError, ValueError) as exc:
@@ -1239,33 +1240,24 @@ def hide_suggestions(v: Vault):
             f"answer to each question, and Recall could not turn them off ({LOCAL_SETTINGS}: {exc}). "
             "They should turn off Prompt suggestions in /config."
         )
-        return None, notes
-    return saved, notes
+        return notes
+    notes.append(
+        "Tell the user, before the first question: suggested replies in the input line can show the "
+        f"answer to each question. Recall has turned them off in this vault ({LOCAL_SETTINGS}), but Claude "
+        "Code reads that setting only when it starts, so they stay on in this session. To hide them now, "
+        "turn off Prompt suggestions in /config (that changes it for every project), or restart Claude "
+        "Code in the vault and run /quiz again. From the next session on they are off in this vault."
+    )
+    return notes
 
 
-def restore_suggestions(v: Vault, session: dict) -> list:
-    """Undo hide_suggestions. A value the user changed during the session is left alone."""
-    saved = session.get("suggestions")
-    if not saved:
-        return []
-    path = v.root / LOCAL_SETTINGS
+def session_minutes(session: dict):
+    """Whole minutes since the session opened, or None when the start time can't be read."""
     try:
-        data = read_local_settings(path)
-        if data.get(SUGGESTION_KEY) is not False:
-            return []
-        if saved["had_key"]:
-            data[SUGGESTION_KEY] = saved["value"]
-        else:
-            del data[SUGGESTION_KEY]
-        if data or saved["existed"]:
-            write_local_settings(path, data)
-        else:
-            path.unlink()
-            if not any(path.parent.iterdir()):
-                path.parent.rmdir()
-    except (OSError, ValueError) as exc:
-        return [f"Could not restore {SUGGESTION_KEY} in {LOCAL_SETTINGS} ({exc}). Tell the user to fix it by hand."]
-    return []
+        started = dt.datetime.fromisoformat(session["started"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return max(0, round((dt.datetime.now() - started).total_seconds() / 60))
 
 
 # ---------------------------------------------------------------------------
@@ -1492,9 +1484,7 @@ def cmd_begin(args):
         raise SrsError(interrupted_report(repo, session), 3)
     snapped = repo.snapshot()
     session = {"command": args.command, "started": now_iso(), "touched": []}
-    suggestion_notes = []
-    if args.command == "quiz":
-        session["suggestions"], suggestion_notes = hide_suggestions(v)
+    suggestion_notes = hide_suggestions(v) if args.command == "quiz" else []
     save_session(v, session)
     note = f" Committed your manual edits first ({plural(snapped, 'file')}, vault: manual edits)." if snapped else ""
     print(f"Session open for /{args.command}.{note}")
@@ -1629,11 +1619,10 @@ def cmd_end(args):
     if pending:
         raise SrsError("Uncommitted changes from this session: " + ", ".join(pending)
                        + ". Commit them (srs.py commit -m ...) or discard them (srs.py discard) first.", 2)
-    notes = restore_suggestions(v, session)
     session_path(v).unlink()
-    print(f"Session for /{session.get('command')} closed.")
-    for line in notes:
-        print(line)
+    minutes = session_minutes(session) if session.get("command") == "quiz" else None
+    duration = f" Duration: {minutes} min." if minutes is not None else ""
+    print(f"Session for /{session.get('command')} closed.{duration}")
 
 
 def cmd_abort(args):
@@ -1644,12 +1633,9 @@ def cmd_abort(args):
         return
     repo = require_repo(v)
     restored, removed, folders = discard_touched(v, repo, session, include_state=True)
-    notes = restore_suggestions(v, session)
     session_path(v).unlink()
     extra = f" and {len(folders)} empty folder(s)" if folders else ""
     print(f"Aborted /{session.get('command')}: restored {len(restored)} file(s), removed {len(removed)} new file(s){extra}.")
-    for line in notes:
-        print(line)
 
 
 def cmd_status(args):
@@ -1725,6 +1711,12 @@ def cmd_record(args):
     save_state(v, state)
     append_log(v, [v.today.isoformat(), name, args.result, before, interval])
     print(describe_answer(name, before, updated, v.today, v.leech_at) + note)
+    left, info = daily_list(state, v.sched, v.today)
+    total = info["done"] + len(left)
+    if left:
+        print(f"Next question: {info['done'] + 1}/{total}.")
+    else:
+        print(f"That was the last question ({total}/{total}).")
 
 
 def rewrite_log_result(v: Vault, day: str, name: str, result: str):

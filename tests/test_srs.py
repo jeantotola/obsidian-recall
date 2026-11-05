@@ -1418,7 +1418,11 @@ class GapTest(VaultCase):
 
 
 class SuggestionsTest(VaultCase):
-    """/quiz hides suggested replies, which can show the answer, and puts them back."""
+    """/quiz turns suggested replies off in the vault, since they can show the answer.
+
+    Claude Code reads the setting only at startup, so the change helps from the next session on
+    and stays: restoring it at the end would undo it before any quiz could benefit.
+    """
 
     def setUp(self):
         super().setUp()
@@ -1428,49 +1432,39 @@ class SuggestionsTest(VaultCase):
     def read_settings(self):
         return json.loads(self.settings.read_text(encoding="utf-8"))
 
-    def test_quiz_hides_them_and_end_removes_what_it_created(self):
+    def test_quiz_turns_them_off_and_they_stay_off(self):
         self.srs("begin", "quiz")
         self.assertIs(self.read_settings()["promptSuggestionEnabled"], False)
         self.srs("end")
-        self.assertFalse(self.settings.exists())
-        self.assertFalse(self.settings.parent.exists())
+        self.assertIs(self.read_settings()["promptSuggestionEnabled"], False)
 
     def test_other_commands_leave_them_alone(self):
         self.srs("begin", "integrate")
         self.assertFalse(self.settings.exists())
         self.srs("end")
 
-    def test_end_restores_the_previous_value_and_keeps_other_keys(self):
+    def test_other_keys_are_kept_in_order(self):
         self.write(".claude/settings.local.json", '{"z": 1, "promptSuggestionEnabled": true, "a": 2}\n')
         self.srs("begin", "quiz")
-        self.assertIs(self.read_settings()["promptSuggestionEnabled"], False)
         self.srs("end")
-        self.assertEqual(list(self.read_settings().items()), [("z", 1), ("promptSuggestionEnabled", True), ("a", 2)])
+        self.assertEqual(list(self.read_settings().items()), [("z", 1), ("promptSuggestionEnabled", False), ("a", 2)])
 
-    def test_end_removes_the_key_but_keeps_a_file_that_already_existed(self):
-        self.write(".claude/settings.local.json", "{}\n")
-        self.srs("begin", "quiz")
+    def test_turning_them_off_says_it_applies_from_the_next_session(self):
+        out = self.srs("begin", "quiz").stdout
+        self.assertIn("only when it starts", out)
+        self.assertIn("/config", out)
         self.srs("end")
-        self.assertEqual(self.read_settings(), {})
 
-    def test_already_off_stays_off(self):
+    def test_already_off_needs_no_note(self):
         self.write(".claude/settings.local.json", '{"promptSuggestionEnabled": false}\n')
-        self.srs("begin", "quiz")
+        self.assertNotIn("Tell the user", self.srs("begin", "quiz").stdout)
         self.srs("end")
         self.assertIs(self.read_settings()["promptSuggestionEnabled"], False)
 
-    def test_a_value_changed_during_the_quiz_is_left_alone(self):
+    def test_abort_leaves_them_off(self):
         self.srs("begin", "quiz")
-        self.write(".claude/settings.local.json", '{"promptSuggestionEnabled": true}\n')
-        self.srs("end")
-        self.assertIs(self.read_settings()["promptSuggestionEnabled"], True)
-
-    def test_an_interrupted_quiz_is_restored_when_recovered(self):
-        self.srs("begin", "quiz")
-        self.assertEqual(self.srs("begin", "quiz", check=False).returncode, 3)
-        self.assertIs(self.read_settings()["promptSuggestionEnabled"], False)
         self.srs("abort")
-        self.assertFalse(self.settings.exists())
+        self.assertIs(self.read_settings()["promptSuggestionEnabled"], False)
 
     def assert_only_the_note_is_committed(self):
         self.write(".claude/settings.local.json", '{"a": 1}\n')
@@ -1506,9 +1500,26 @@ class SuggestionsTest(VaultCase):
         self.assertIn("turn it off where it is defined", out)
         self.srs("end")
 
-    def test_no_note_without_the_variable(self):
-        self.assertNotIn("Tell the user", self.srs("begin", "quiz").stdout)
+    def test_no_variable_note_without_the_variable(self):
+        self.assertNotIn("turn it off where it is defined", self.srs("begin", "quiz").stdout)
         self.srs("end")
+
+
+class DurationTest(VaultCase):
+    """Closing a quiz reports how long it lasted."""
+
+    def test_end_reports_the_quiz_duration(self):
+        self.srs("begin", "quiz")
+        path = self.vault / ".srs/session.json"
+        session = json.loads(path.read_text(encoding="utf-8"))
+        started = dt.datetime.now() - dt.timedelta(minutes=21, seconds=10)
+        session["started"] = started.replace(microsecond=0).isoformat()
+        path.write_text(json.dumps(session), encoding="utf-8")
+        self.assertIn("closed. Duration: 21 min.", self.srs("end").stdout)
+
+    def test_no_duration_for_other_commands(self):
+        self.srs("begin", "integrate")
+        self.assertNotIn("Duration", self.srs("end").stdout)
 
 
 class QuestionCountTest(VaultCase):
@@ -1536,6 +1547,13 @@ class QuestionCountTest(VaultCase):
         self.assertIn("Question count: start at 2/3, end at 3/3.", self.due())
         self.srs("record", "Eigenvalues", "pass", today=self.DAY)
         self.assertIn("Question count: start at 3/3, end at 3/3.", self.due())
+
+    def test_record_gives_the_next_count(self):
+        self.assertIn("Next question: 2/3.", self.srs("record", "Eigenvectors", "fail", today=self.DAY).stdout)
+        self.assertIn("Next question: 3/3.", self.srs("record", "Eigenvalues", "pass", today=self.DAY).stdout)
+        out = self.srs("record", "Bayes' theorem", "pass", today=self.DAY).stdout
+        self.assertIn("That was the last question (3/3).", out)
+        self.assertNotIn("Next question", out)
 
     def test_denominator_is_capped_by_the_daily_limit(self):
         self.set_daily_limit(2)
