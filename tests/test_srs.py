@@ -996,6 +996,13 @@ class ChecksTest(VaultCase):
         batch = out.split("## Batch to audit")[1]
         self.assertNotIn("Math/Bayes.md", batch)
 
+    def test_maintenance_batch_gives_absolute_paths(self):
+        self.index("## [[Bayes]]\n- Bayes' theorem\n")
+        out = self.srs("context", "maintenance").stdout
+        batch = out.split("## Batch to audit")[1]
+        self.assertIn("Absolute path: `", batch)
+        self.assertIn("/Bayes.md`", batch)
+
 
 class FolderMapTest(VaultCase):
     MAP = ("# Folder map\n\n| Folder | Takes | Doesn't |\n| :--- | --- | ---: |\n"

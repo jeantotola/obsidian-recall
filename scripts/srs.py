@@ -29,7 +29,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-VERSION = "0.12.0"
+VERSION = "0.12.1"
 SRS_DIR = ".srs"
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 TEMPLATES = PLUGIN_ROOT / "templates"
@@ -2745,8 +2745,10 @@ def context_maintenance(v: Vault) -> list:
     batch = batch[: v.limits["maintenance_batch"]]
     out.append("")
     out.append(f"## Batch to audit ({len(batch)} pages; over-size pages and pages with shared names are left out)")
+    out.append("Each page shows its vault path, then its absolute path in backticks. Open pages by the absolute path.")
     for page in batch:
-        out.append(f"- {page.path}")
+        out.append(f"### {page.path}")
+        out.append(f"Absolute path: `{(v.root / page.path).as_posix()}`")
         out += [f"    {line}" for line in page.entry_text().splitlines()]
     out.append("")
     out.append(f"Full index: {v.index_rel}")

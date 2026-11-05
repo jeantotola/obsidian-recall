@@ -21,7 +21,7 @@ The block above comes from Recall's script. Call the script as `python3 ${CLAUDE
 
 1. Run `srs.py begin maintenance`, then `srs.py prune-seals` without asking: it removes the seals of files that are gone or are no longer pages (excluded, the inbox, the index). Note how many it removed and which.
 
-2. If the batch to audit is not empty, use the Agent tool with the `recall:page-auditor` agent. Give it the batch exactly as listed (each path with its index entry) and the index path.
+2. If the batch to audit is not empty, use the Agent tool with the `recall:page-auditor` agent. Give it the batch exactly as listed (each page with its absolute path and its index entry) and the absolute path of the index. Folder names may start with a marker such as `A) `: it is part of the name, and the absolute path must be used as given.
 
 3. Run `srs.py verify "<path>" "<path>" ...` with every page the auditor passed. The script refuses pages that fail the size or shared-name checks; report those as failures. For each duplicate (criterion C) the auditor reports, run `srs.py unseal "<other page>"` too, so both pages stay unsealed until the duplicate is fixed.
 
