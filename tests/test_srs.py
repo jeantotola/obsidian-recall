@@ -1566,11 +1566,52 @@ class QuestionCountTest(VaultCase):
         self.assertIn("Nothing to ask today", out)
         self.assertNotIn("Question count", out)
 
+    def test_no_preparing_ahead_for_a_short_list(self):
+        self.assertNotIn("Prepare ahead", self.due())
+
     def test_quiz_context_and_skill_use_the_count(self):
         self.assertIn("Question count: start at 1/3", self.srs("context", "quiz", today=self.DAY).stdout)
         skill = (ROOT / "skills/quiz/SKILL.md").read_text()
         self.assertIn("Question count", skill)
         self.assertIn("without a count", skill)
+
+
+class PrepareAheadTest(VaultCase):
+    """More than 10 questions left: /quiz has a fork draft them from the fourth item on."""
+
+    DAY = "2026-01-11"
+    NAMES =[f"Concept {n}" for n in range(1, 13)]
+
+    def setUp(self):
+        super().setUp()
+        self.index("## [[Big page]]\n" + "".join(f"- {name}\n" for name in self.NAMES))
+        path = self.vault / ".srs/config.json"
+        config = json.loads(path.read_text())
+        config["scheduling"]["new_per_day"] = 12
+        path.write_text(json.dumps(config))
+        self.srs("add", "--source", "integrate", *self.NAMES)
+
+    def due(self):
+        return self.srs("due", today=self.DAY).stdout
+
+    def test_long_list_is_prepared_ahead_from_the_fourth_item(self):
+        self.assertIn("Prepare ahead: items 4 to 12 of the list below (questions 4/12 to 12/12).", self.due())
+        self.assertIn("Prepare ahead", self.srs("context", "quiz", today=self.DAY).stdout)
+
+    def test_range_follows_what_is_left(self):
+        self.srs("record", "Concept 1", "pass", today=self.DAY)
+        self.assertIn("Prepare ahead: items 4 to 11 of the list below (questions 5/12 to 12/12).", self.due())
+
+    def test_ten_or_fewer_left_are_not_prepared(self):
+        self.srs("record", "Concept 1", "pass", today=self.DAY)
+        self.srs("record", "Concept 2", "pass", today=self.DAY)
+        self.assertNotIn("Prepare ahead", self.due())
+
+    def test_skill_launches_a_fork(self):
+        skill = (ROOT / "skills/quiz/SKILL.md").read_text()
+        self.assertIn("Prepare ahead", skill)
+        self.assertIn('"fork"', skill)
+        self.assertIn("say nothing and end your turn at once", skill)
 
 
 class WelcomeTest(VaultCase):
@@ -2169,7 +2210,6 @@ class QuizAsksItselfTest(unittest.TestCase):
         self.assertIn("2. Ask one question, following the quiz rules", skill)
         for gone in ("run_in_background", "batch", "drafter", "Silence when", "THIN", "SECOND"):
             self.assertNotIn(gone, skill)
-        self.assertNotIn("Agent tool", skill)
 
     def test_scheduling_steps_are_unchanged(self):
         skill = (ROOT / "skills/quiz/SKILL.md").read_text()

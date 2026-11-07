@@ -110,6 +110,11 @@ DEFAULT_CONFIG = {
     "target_retention": [0.85, 0.9],
 }
 
+# /quiz: when more than PREPARE_ABOVE questions are left, a background fork drafts
+# the questions from list item PREPARE_FROM on while the first ones are asked.
+PREPARE_ABOVE = 10
+PREPARE_FROM = 4
+
 
 class SrsError(Exception):
     """Printed to stderr. Exit codes: 1 usage or failure, 2 refused, 3 interrupted session."""
@@ -2414,6 +2419,10 @@ def render_due(v: Vault, state: dict, idx: Index) -> list:
         return out
     total = info["done"] + len(items)  # stays the same all day: each answer moves one from items to done
     out.append(f"Question count: start at {info['done'] + 1}/{total}, end at {total}/{total}.")
+    if len(items) > PREPARE_ABOVE:
+        first = PREPARE_FROM
+        out.append(f"Prepare ahead: items {first} to {len(items)} of the list below "
+                   f"(questions {info['done'] + first}/{total} to {total}/{total}).")
     out.append("")
     for n, name in enumerate(items, start=1):
         rec = state["concepts"][name]

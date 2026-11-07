@@ -295,6 +295,7 @@ obsidian-recall/
 - **Claude writes, asks and judges.** It integrates your notes, asks questions from each concept's page, and judges answers strictly. You can contest a verdict: if you do, Claude runs `srs.py amend` and the answer is corrected on the spot, in the schedule and in the log.
 - **The hook keeps both in their lanes.** It blocks direct edits to `.srs/`, lets Claude edit notes without prompts only while a command is open (recording each file for the diff), and lets the plugin's own script run without permission prompts. Because the review is the git diff, it works the same in every permission mode. A second hook shows the welcome message when a new session starts.
 - **Cheap agents read in bulk.** Indexing and auditing pages run in Haiku subagents that can only read.
+- **Long quizzes are prepared ahead.** With more than 10 questions left, a background fork of the session (same model) drafts the questions from the fourth on while you answer the first ones.
 
 ## Development
 
