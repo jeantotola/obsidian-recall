@@ -107,7 +107,7 @@ The schedule doesn't depend on the log: the rules use only each concept's curren
 
 1. The script opens a session and the command receives today's list, with each concept's page, focus and recent questions. Opening the session also turns off suggested replies in the input line, because they can show the answer (see Git, "Suggestions").
 2. For each concept, Claude reads the owner page and asks one question. The header is the count alone, without the concept's name, which could give the answer away; the question names its subject instead. The script gives the count: the list's first line, then `srs.py record`, which prints the next one. It is numbered against the day's total: the concepts already answered today plus those still to ask, which the daily limit caps. On a day with 15 questions the count ends at 15/15, and with 31 concepts due it ends at 20/20. When more than 10 questions are left, the list says "Prepare ahead": Claude launches a background fork of the session (same model, same context) that drafts the questions from list item 4 on while the first three are asked. Claude asks the drafts as they are, reads the page only if you contest, and says nothing when the fork reports, so no text lands between a question and its answer. The thresholds are `PREPARE_ABOVE` and `PREPARE_FROM` in `srs.py`; preparing changes nothing in scheduling, `record` or the commit.
-3. You answer. Claude says pass or fail with one line of justification, the expected answer and the page. You may contest, and your word wins: Claude runs `srs.py amend` with the result you stand for.
+3. You answer. On a pass Claude says only "pass", to keep reviews fast; on a fail it gives one line of justification, the expected answer and the page. You may contest, and your word wins: Claude runs `srs.py amend` with the result you stand for.
 4. Each answer is recorded with `srs.py record`, which updates the state and the log.
 5. Each failed concept opens a gap naming the idea the answer missed (see Gaps), and is asked again at the end on that idea, without recording. A concept whose verdict you contested leaves this repeat if it is amended to pass, and joins it if it is amended to fail.
 6. At the end: the score, leeches, thin pages and misplaced concepts, a commit such as `quiz: 17/20`, and how long the quiz lasted, which `srs.py end` reports from the session's start.
@@ -122,6 +122,7 @@ Question rules, editable in `.srs/quiz-rules.md`:
 - Free recall, never multiple choice: recalling trains memory more than recognizing.
 - Meant to consolidate, not to catch you out.
 - Judged strictly: the core idea present and no conceptual error. Lenient grading stretches intervals for nothing.
+- Terse answers are fine: the idea is judged, not the prose. When a terse answer could be a guess, Claude asks one short follow-up instead of failing it.
 
 ## Existing material and /promote
 
