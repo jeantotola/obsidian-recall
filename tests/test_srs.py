@@ -2446,6 +2446,17 @@ class AgentReviewTest(VaultCase):
             self.assertIn(part, text)
         self.assertIn(str(self.vault / "index.md"), text)
 
+    def test_edits_outside_edit_and_write_are_flagged(self):
+        self.plan("1. Eigendecomposition: add First at the end")
+        (self.vault / "Math/Eigendecomposition.md").write_text(self.EIGEN + "\nwritten through the shell\n")
+        self.edit_via_hook("index.md", (self.vault / "index.md").read_text() + "- Eigenvalues\n")
+        warning = "Warning: changed but not recorded by this session, so left out of the diff: Math/Eigendecomposition.md."
+        self.assertIn(warning, self.prepare().stdout)
+        self.assertIn(warning, self.srs("diff").stdout)
+        self.edit_via_hook("Math/Eigendecomposition.md", self.EIGEN + "\nwritten through the shell\n")
+        self.assertNotIn("Warning: changed but not recorded", self.prepare().stdout)
+        self.assertNotIn("Warning: changed but not recorded", self.srs("diff").stdout)
+
     def test_moved_and_rewritten_lines_are_told_apart(self):
         self.plan("1. move the Bayes line to Eigendecomposition; rewrite Eigendecomposition's first line")
         self.edit_via_hook("Math/Bayes.md", "# Bayes\n")

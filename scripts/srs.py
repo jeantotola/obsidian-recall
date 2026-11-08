@@ -1257,6 +1257,22 @@ def pending_paths(repo: Repo, session: dict) -> list:
     return [p for p in session.get("touched", []) if p in changed]
 
 
+def unrecorded_edits(repo: Repo, session: dict) -> list:
+    """Notes changed during the session that the guard did not record: written outside Edit and Write."""
+    touched = set(session.get("touched", []))
+    return sorted(p for p in repo.status()
+                  if p not in touched and not any(part.startswith(".") for part in p.split("/")))
+
+
+def unrecorded_warning(repo: Repo, session: dict) -> list:
+    paths = unrecorded_edits(repo, session)
+    if not paths:
+        return []
+    return [f"Warning: changed but not recorded by this session, so left out of the diff: {', '.join(paths)}.",
+            "If you wrote them, write them again with Edit or Write: only those tools are recorded. "
+            "If the user edited them in Obsidian, leave them: they are committed later as manual edits."]
+
+
 def interrupted_report(repo: Repo, session: dict) -> str:
     pending = pending_paths(repo, session)
     lines = [f"INTERRUPTED SESSION: /{session.get('command')} started {session.get('started')} was never closed."]
@@ -1644,6 +1660,9 @@ def cmd_diff(args):
     session = require_session(v)
     changed = repo.status()
     paths = [p for p in session.get("touched", []) if p in changed]
+    warning = unrecorded_warning(repo, session)
+    if warning:
+        print("\n".join(warning + [""]))
     if not paths:
         print("No changes to review.")
         return
@@ -3003,6 +3022,9 @@ def review_prepare(v: Vault, args):
     path = write_review_input(v, repo, block, plan, facts)
     write_json(folder / "meta.json", {"title": block.title, "source": rel, "judges": judges, "digest": facts["digest"],
                                       "checks": "ok" if not problems else "fail", "prepared": now_iso()})
+    warning = unrecorded_warning(repo, load_session(v))
+    if warning:
+        print("\n".join(warning))
     print("\n".join(report_checks(problems)))
     if not problems:
         print(f"Judges: {', '.join(f'{JUDGE_PLUGIN}:{j}' for j in judges)}")
