@@ -2,7 +2,7 @@
 
 **A git-native study system for Obsidian.**
 
-You write what you learn in one inbox page. At the end of a study session, `/integrate` moves it into your vault's pages, block by block, and shows each change as a git diff for you to approve. When the session changed the index, the diff starts with warnings about the lines it added or altered: a description over the limit, a repeated concept name, a link that doesn't resolve or a line that can't be read. They warn; they don't block the commit. An index records the concepts each page explains, and `/quiz` asks you up to 20 questions a day on those concepts, scheduled by spaced repetition (Anki's classic algorithm by default, and every number adjustable). A small Python script does the scheduling and all the git work; Claude writes, asks and judges; you approve.
+You write what you learn in one inbox page. At the end of a study session, `/integrate` moves it into your vault's pages, block by block, and shows each change as a git diff for you to approve. When the session changed the index, the diff starts with warnings about the lines it added or altered: a description over the limit, a repeated concept name, a link that doesn't resolve or a line that can't be read. They warn; they don't block the commit. An index records the concepts each page explains, and `/quiz` asks you up to 20 questions a day on those concepts, scheduled by spaced repetition (Anki's classic algorithm by default, and every number adjustable). If you prefer, a config key lets judge agents check each block instead, once you have approved the plan, and only the blocks they don't clear wait for you ([Agent review](#agent-review)). A small Python script does the scheduling and all the git work; Claude writes, asks and judges; you approve.
 
 - **Your words stay yours.** Claude moves and links what you wrote, and marks anything it adds.
 - **Git is the backbone.** Each operation is one commit, so `git log` reads like a study journal and `git revert` undoes.
@@ -53,12 +53,12 @@ Choose the **project** scope, so Recall's commands and hook load only in this va
 
 | Command | When | What it does |
 | --- | --- | --- |
-| `/integrate [n \| file]` | After studying | Plans where the inbox blocks go, then moves them into your pages with one diff and one commit per block. Ends with one question: which concepts go into review. |
+| `/integrate [n \| file]` | After studying | Plans where the inbox blocks go, then moves them into your pages with one diff and one commit per block (or, with [agent review](#agent-review), one commit per block the judges clear). Ends with one question: which concepts go into review. |
 | `/quiz` | Every day | Asks about the concepts that are due. Answer in your own words. `/config` sets how many questions a day. |
 | `/promote [page or topic]` | When you have time | Adds concepts from notes you already have to the quiz, such as what you wrote before Recall. |
 | `/maintenance` | Now and then | Checks that your pages match Recall's list of concepts, and reports what needs fixing. |
 | `/setup` | Once, then until your notes are covered | Configures the vault and lists the concepts your existing pages explain. |
-| `/config [change]` | When your pace changes | Shows or changes how many concepts you get per day. You can also just ask for it in the conversation. |
+| `/config [change]` | When your pace changes | Shows or changes how many concepts you get per day, and whether `/integrate` is reviewed by you or by judge agents. You can also just ask for it in the conversation. |
 
 Commands work by their short name when nothing else uses it; otherwise type `/recall:quiz` and so on. When you open a new session in the vault, Recall tells you which of them today calls for ([Welcome message](#welcome-message)).
 
@@ -74,6 +74,15 @@ Commands work by their short name when nothing else uses it; otherwise type `/re
 3. **Tomorrow, run `/quiz`.** One question per due concept, asked from its page. When you miss something, Claude notes the idea you missed. It comes back at the end of the session and in that concept's next questions, until you get it right at least 3 days later.
 
 `/integrate 3` processes only the three newest blocks; `/integrate path/to/old-diary.md` integrates another file block by block, the same way.
+
+### Agent review
+
+By default you approve every diff. With `integrate_review` set to `agent` (ask `/config`), `/integrate` still asks you to approve the plan, and then commits each block without showing you its diff, once the block passes two kinds of check:
+
+- **The script's checks**, which cost nothing: the index warnings, links that don't resolve or point to a heading that doesn't exist, and existing text that was rewritten or removed on a page the plan doesn't name.
+- **Judge agents that only read.** `diff-judge` (Haiku, always) checks that your wording was kept, that the block landed where the plan says, that an error in your text was not corrected silently, and that every rewrite or move is in the plan. `concept-judge` (Sonnet, only when the block adds a heading or an index concept) checks that each new concept sits on the page that owns it, isn't a duplicate, and is in the index. They return a verdict and never text; Claude reads it, revises once if it agrees, and the judges don't look again.
+
+A block that doesn't pass is set aside with the reason, the other blocks go on, and at the end you choose to look at the set-aside blocks now, with the usual diff, or later: they stay in the inbox, and the welcome message counts them. The final list of concepts for the quiz is still yours. Each commit message lists the verdicts, so `git log` is the audit and `git revert` undoes.
 
 ### Welcome message
 
@@ -106,7 +115,7 @@ The heading level is configurable, and headings inside code blocks don't count. 
 | Commit message | Made by |
 | --- | --- |
 | `vault: manual edits` | Any command, first, if you changed files in Obsidian since the last commit |
-| `integrate: <block title>` | `/integrate`, after your approval of each block |
+| `integrate: <block title>` | `/integrate`, after your approval of each block; with agent review, after the judges clear it, and the message body lists their verdicts |
 | `integrate: queue N concepts` | `/integrate`, after the review question |
 | `quiz: 17/20` | `/quiz`, at the end |
 | `promote: N concepts` | `/promote` |
@@ -198,7 +207,7 @@ To check retention, run `python3 <plugin folder>/scripts/srs.py stats` in the va
 
 ## Configuration
 
-`/setup` writes `.srs/config.json` in your vault. Use `/config`, or just ask, to change `scheduling.daily_limit` and `scheduling.new_per_day`; edit the file by hand for the rest.
+`/setup` writes `.srs/config.json` in your vault. Use `/config`, or just ask, to change `scheduling.daily_limit`, `scheduling.new_per_day` and `integrate_review`; edit the file by hand for the rest.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -210,6 +219,7 @@ To check retention, run `python3 <plugin folder>/scripts/srs.py stats` in the va
 | `paths.folder_map` | `folders.md` | Folder map: what each top-level folder takes, used by `/integrate` with `folders` |
 | `new_page_placement` | `folders` | `folders`: `/integrate` puts a new page in the existing folder whose topic fits best, or proposes a new folder in the vault's naming style. `flat`: every new page goes in `paths.new_pages` |
 | `inbox_heading_level` | `2` | Heading level that opens an inbox block |
+| `integrate_review` | `human` | `human`: you approve each diff of `/integrate`. `agent`: you approve the plan, then the script's checks and the judge agents decide each block, and you supervise only the blocks they send back |
 | `exclude` | `[]` | Patterns to ignore: `folder/`, `*.excalidraw.md`, `Daily/*.md` |
 | `scheduling.algorithm` | `anki` | `anki` or `thirds` |
 | `scheduling.daily_limit` | `20` | Concepts per day, reviews and new concepts together |
@@ -263,13 +273,14 @@ your-vault/
 ├── folders.md            folder map
 ├── wiki/                 new pages
 ├── ...                   your pages, wherever they are
-├── .gitignore            Recall adds .srs/session.json and Obsidian's workspace files
+├── .gitignore            Recall adds .srs/session.json, .srs/review/ and Obsidian's workspace files
 └── .srs/
     ├── config.json
     ├── quiz-rules.md
     ├── state.json        review schedule
     ├── verified.json     seals
     ├── log.csv           one line per answer
+    ├── review/           agent review: the plan, the judges' verdicts, blocks waiting for you (never committed)
     └── session.json      the command in progress (never committed)
 ```
 
@@ -279,8 +290,8 @@ In this repository:
 obsidian-recall/
 ├── .claude-plugin/       plugin and marketplace manifests
 ├── skills/               setup, integrate, quiz, promote, maintenance, config
-├── agents/               index-drafter and page-auditor (Haiku, read-only)
-├── hooks/                guard.py and the registration of both hooks
+├── agents/               index-drafter and page-auditor (Haiku, read-only); diff-judge (Haiku) and concept-judge (Sonnet), read-only too
+├── hooks/                guard.py and the registration of the hooks
 ├── scripts/srs.py        the engine
 ├── templates/            starting files for a vault
 ├── rules.md              rules every command follows
@@ -293,8 +304,8 @@ obsidian-recall/
 
 - **The script decides.** `srs.py` computes every date and the daily list, checks the index, parses the inbox and runs git. Each command injects its output before Claude reads the command, so the daily list arrives ready.
 - **Claude writes, asks and judges.** It integrates your notes, asks questions from each concept's page, and judges answers strictly. You can contest a verdict: if you do, Claude runs `srs.py amend` and the answer is corrected on the spot, in the schedule and in the log.
-- **The hook keeps both in their lanes.** It blocks direct edits to `.srs/`, lets Claude edit notes without prompts only while a command is open (recording each file for the diff), and lets the plugin's own script run without permission prompts. Because the review is the git diff, it works the same in every permission mode. A second hook shows the welcome message when a new session starts.
-- **Cheap agents read in bulk.** Indexing and auditing pages run in Haiku subagents that can only read.
+- **The hook keeps both in their lanes.** It blocks direct edits to `.srs/`, lets Claude edit notes without prompts only while a command is open (recording each file for the diff), and lets the plugin's own script run without permission prompts. Because the review is the git diff, it works the same in every permission mode. A second hook shows the welcome message when a new session starts, and a third saves the judge agents' verdicts to a file, so a verdict never passes through the agent that wrote the block.
+- **Cheap agents read in bulk.** Indexing and auditing pages run in Haiku subagents that can only read. In agent review, the diff judge runs on Haiku, and the concept judge on Sonnet and only when a block adds a concept.
 - **Long quizzes are prepared ahead.** With more than 10 questions left, a background fork of the session (same model) drafts the questions from the fourth on while you answer the first ones.
 
 ## Development

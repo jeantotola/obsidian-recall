@@ -2186,7 +2186,7 @@ class IntegrateOrderTest(unittest.TestCase):
     def test_existing_text_is_only_added_to(self):
         skill = (ROOT / "skills/integrate/SKILL.md").read_text()
         self.assertIn("not at the end of the page by default", skill)
-        self.assertIn("Never move or rewrite the text already on the page", skill)
+        self.assertIn("Never move or rewrite the text already on the page unless an item of the approved plan says to", skill)
 
 
 class QuizAsksItselfTest(unittest.TestCase):
