@@ -2790,7 +2790,7 @@ def review_problems(v: Vault, facts: dict, plan: str) -> list:
     for p, n in sorted(rewritten.items()):
         if Path(p).stem.casefold() not in plan_text:
             problems.append(f"{p}: {plural(n, 'existing line')} rewritten or removed, but the approved plan "
-                            "doesn't name that page (the plan must say 'move' or 'rewrite')")
+                            "doesn't name that page (the plan must say 'move', 'rewrite' or 'link')")
     return problems
 
 
@@ -2803,17 +2803,40 @@ def listing(items: list, fmt) -> str:
     return "\n".join(f"- {fmt(item)}" for item in items) if items else "(none)"
 
 
-def write_review_input(v: Vault, repo: Repo, block: Block, plan: str, facts: dict) -> Path:
-    paths = list(facts["files"])
+def review_input_text(v: Vault, repo: Repo, block: Block, plan: str, facts: dict, judge: str) -> str:
+    """The file one judge reads. The diff judge gets the pages only: the index is the concept judge's."""
+    with_index = judge != "diff-judge"
+    paths = [p for p in facts["files"] if with_index or p != v.index_rel]
     diff = render_diff(v, repo, facts["status"], paths, warnings=False) if paths else "(no changes)"
     map_path = v.root / v.folder_map_rel
-    text = "\n".join([
+    head = [
         f"# Review input: block {block.id} ({block.title})",
         f"Block id: {block.id}",
         f"Vault: {v.root.as_posix()}",
-        f"Index: {(v.root / v.index_rel).as_posix()}",
+    ]
+    if with_index:
+        head.append(f"Index: {(v.root / v.index_rel).as_posix()}")
+    head += [
         f"Folder map: {map_path.as_posix() if map_path.is_file() else 'none'}",
         "Pages are vault-relative below; open one by joining it to the vault path above.",
+    ]
+    if not with_index:
+        head.append("The index is judged by another agent: its changes are left out of this file.")
+    derived = [
+        "## Derived from the diff",
+        "Moved lines (removed from one place and added unchanged elsewhere):",
+        listing(facts["moved"], lambda x: f"{x[0]}: {x[1].strip()}"),
+        "",
+        "Existing lines rewritten or removed:",
+        listing(facts["rewritten"], lambda x: f"{x[0]}: {x[1].strip()}"),
+        "",
+    ]
+    if with_index:
+        derived += ["Index lines changed or removed:", listing(facts["index_removed"], lambda x: x.strip()), ""]
+    derived += ["New headings:", listing(facts["headings"], lambda x: f"{x[0]}: {x[1]}"), ""]
+    if with_index:
+        derived += ["New concepts in the index:", listing(facts["concepts"], lambda x: x), ""]
+    return "\n".join(head + [
         "",
         "## Block text (from the inbox)",
         "----- begin block text -----",
@@ -2825,31 +2848,23 @@ def write_review_input(v: Vault, repo: Repo, block: Block, plan: str, facts: dic
         plan.rstrip("\n"),
         "----- end plan -----",
         "",
-        "## Derived from the diff",
-        "Moved lines (removed from one place and added unchanged elsewhere):",
-        listing(facts["moved"], lambda x: f"{x[0]}: {x[1].strip()}"),
-        "",
-        "Existing lines rewritten or removed:",
-        listing(facts["rewritten"], lambda x: f"{x[0]}: {x[1].strip()}"),
-        "",
-        "Index lines changed or removed:",
-        listing(facts["index_removed"], lambda x: x.strip()),
-        "",
-        "New headings:",
-        listing(facts["headings"], lambda x: f"{x[0]}: {x[1]}"),
-        "",
-        "New concepts in the index:",
-        listing(facts["concepts"], lambda x: x),
-        "",
+    ] + derived + [
         "## Diff",
         "----- begin diff -----",
         diff,
         "----- end diff -----",
         "",
     ])
-    path = block_review_dir(v, block.id) / "input.md"
-    write_text(path, text)
-    return path
+
+
+def write_review_inputs(v: Vault, repo: Repo, block: Block, plan: str, facts: dict, judges: list) -> dict:
+    """{judge: path} of the input file each judge reads."""
+    paths = {}
+    for judge in judges:
+        path = block_review_dir(v, block.id) / f"input-{judge}.md"
+        write_text(path, review_input_text(v, repo, block, plan, facts, judge))
+        paths[judge] = path
+    return paths
 
 
 def load_meta(v: Vault, block_id: str) -> dict:
@@ -3019,7 +3034,7 @@ def review_prepare(v: Vault, args):
     shutil.rmtree(str(folder), ignore_errors=True)
     folder.mkdir(parents=True)
     judges = judges_for(facts)
-    path = write_review_input(v, repo, block, plan, facts)
+    paths = write_review_inputs(v, repo, block, plan, facts, judges)
     write_json(folder / "meta.json", {"title": block.title, "source": rel, "judges": judges, "digest": facts["digest"],
                                       "checks": "ok" if not problems else "fail", "prepared": now_iso()})
     warning = unrecorded_warning(repo, load_session(v))
@@ -3028,7 +3043,8 @@ def review_prepare(v: Vault, args):
     print("\n".join(report_checks(problems)))
     if not problems:
         print(f"Judges: {', '.join(f'{JUDGE_PLUGIN}:{j}' for j in judges)}")
-        print(f"Input: {path.as_posix()}")
+        for judge in judges:
+            print(f"Input for {JUDGE_PLUGIN}:{judge}: {paths[judge].as_posix()}")
 
 
 def review_verdict(v: Vault, args):
@@ -3067,7 +3083,7 @@ def review_final(v: Vault, args):
         if judge not in meta["judges"]:
             problems.append(f"the revision now needs {judge}, which did not review this block")
     write_text(folder / "note.txt", args.note.strip() + "\n")
-    write_review_input(v, repo, block, plan, facts)
+    write_review_inputs(v, repo, block, plan, facts, meta["judges"])
     meta.update({"digest": facts["digest"], "checks": "ok" if not problems else "fail"})
     write_json(folder / "meta.json", meta)
     print("\n".join(report_checks(problems)))

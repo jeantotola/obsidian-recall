@@ -2438,13 +2438,31 @@ class AgentReviewTest(VaultCase):
         out = self.prepare().stdout
         self.assertIn("Checks: ok", out)
         self.assertIn("Judges: recall:diff-judge\n", out)
-        path = Path(out.split("Input: ")[1].strip())
-        self.assertEqual(path, self.vault / ".srs/review" / self.first / "input.md")
+        path = Path(out.split("Input for recall:diff-judge: ")[1].strip())
+        self.assertEqual(path, self.vault / ".srs/review" / self.first / "input-diff-judge.md")
         text = path.read_text()
         for part in ("## Block text", "## First", "one", "## Approved plan", "add First after the first paragraph",
                      "+one", "Math/Eigendecomposition.md"):
             self.assertIn(part, text)
-        self.assertIn(str(self.vault / "index.md"), text)
+
+    def test_the_diff_judge_does_not_see_the_index(self):
+        self.plan("1. Eigendecomposition: add First at the end")
+        self.edit_via_hook("Math/Eigendecomposition.md", self.EIGEN + "\n## Eigenvalues\none\n")
+        self.edit_via_hook("index.md", (self.vault / "index.md").read_text().replace(
+            "- Eigenvectors\n", "- Eigenvectors\n- Eigenvalues — The scalars λ in Av = λv\n"))
+        out = self.prepare().stdout
+        self.assertIn("Judges: recall:diff-judge, recall:concept-judge\n", out)
+        folder = self.vault / ".srs/review" / self.first
+        self.assertIn(f"Input for recall:diff-judge: {(folder / 'input-diff-judge.md').as_posix()}", out)
+        self.assertIn(f"Input for recall:concept-judge: {(folder / 'input-concept-judge.md').as_posix()}", out)
+        diff_input = (folder / "input-diff-judge.md").read_text()
+        concept_input = (folder / "input-concept-judge.md").read_text()
+        for text in (diff_input, concept_input):
+            self.assertIn("+## Eigenvalues", text)
+        for part in ("The scalars λ", "index.md", "New concepts in the index", "Index lines changed"):
+            self.assertNotIn(part, diff_input)
+            self.assertIn(part, concept_input)
+        self.assertIn(str(self.vault / "index.md"), concept_input)
 
     def test_edits_outside_edit_and_write_are_flagged(self):
         self.plan("1. Eigendecomposition: add First at the end")
@@ -2463,9 +2481,9 @@ class AgentReviewTest(VaultCase):
         self.edit_via_hook("Math/Eigendecomposition.md", "# Eigen\nAv = λv, reworded.\nP(A|B) = P(B|A)P(A)/P(B)\n")
         out = self.prepare().stdout
         self.assertIn("Checks: ok", out)
-        text = (self.vault / ".srs/review" / self.first / "input.md").read_text()
+        text = (self.vault / ".srs/review" / self.first / "input-diff-judge.md").read_text()
         moved = text.split("Moved lines")[1].split("Existing lines rewritten")[0]
-        rewritten = text.split("Existing lines rewritten or removed:")[1].split("Index lines changed")[0]
+        rewritten = text.split("Existing lines rewritten or removed:")[1].split("New headings")[0]
         self.assertIn("Math/Bayes.md: P(A|B) = P(B|A)P(A)/P(B)", moved)
         self.assertNotIn("reworded", moved)
         self.assertIn("Math/Eigendecomposition.md: Av = λv defines eigenvectors.", rewritten)
@@ -2670,7 +2688,7 @@ class AgentReviewTest(VaultCase):
         self.edit_via_hook("Math/Eigendecomposition.md", self.EIGEN + "one\n")
         out = self.srs("review", "final", self.first, "--note", "removed the padding").stdout
         self.assertIn("Checks: ok", out)
-        self.assertNotIn("padding", (self.vault / ".srs/review" / self.first / "input.md").read_text().split("## Diff")[1])
+        self.assertNotIn("padding", (self.vault / ".srs/review" / self.first / "input-diff-judge.md").read_text().split("## Diff")[1])
         again = self.srs("review", "final", self.first, "--note", "again", check=False)
         self.assertIn("already revised once", again.stderr)
         self.srs("inbox", "remove", self.first)
