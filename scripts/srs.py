@@ -98,6 +98,16 @@ DEFAULT_CONFIG = {
     "new_page_placement": "folders",
     "inbox_heading_level": 2,
     "integrate_review": "human",  # human: the user approves each diff; agent: judge agents review it
+    # The one-time question and the reminders to try the agent review while the mode is human.
+    # asked, asked_head and wait_days are state kept by `srs.py config`; the rest are limits.
+    "integrate_review_prompt": {
+        "asked": None,       # day of the last answer to the question or the reminder
+        "asked_head": None,  # HEAD then, to count the blocks integrated since
+        "wait_days": None,   # days to wait before the next reminder
+        "first_days": 14,    # wait after an answer
+        "max_days": 41,      # a "not now" doubles the wait, up to this
+        "min_commits": 10,   # blocks integrated since the last answer before a reminder
+    },
     "exclude": [],
     "scheduling": {
         "algorithm": "anki",
@@ -1079,6 +1089,10 @@ def git(args: list, cwd: Path, check: bool = True):
     return proc
 
 
+def head_sha(v: Vault) -> str:
+    return git(["rev-parse", "HEAD"], v.root).stdout.strip()
+
+
 def git_toplevel(path: Path):
     proc = git(["rev-parse", "--show-toplevel"], path, check=False)
     return proc.stdout.strip() if proc.returncode == 0 else None
@@ -2012,6 +2026,56 @@ def review_mode_line(v: Vault) -> str:
     return f"/integrate review: {mode} ({what})."
 
 
+def integrate_commits_since(v: Vault, sha) -> int:
+    """Blocks integrated since a commit: `integrate:` commits, not the `integrate: queue` ones."""
+    if not sha:
+        return 0
+    proc = git(["log", f"{sha}..HEAD", "--format=%s", "--", "."], v.root, check=False)
+    if proc.returncode != 0:
+        return 0  # the commit is gone (history rewritten): no reminder rather than a wrong one
+    return sum(1 for line in proc.stdout.splitlines()
+               if line.startswith("integrate:") and not line.startswith("integrate: queue"))
+
+
+def review_prompt_status(v: Vault) -> str:
+    """'first' until the user has answered, 'due' when a reminder is worth showing, else ''.
+    Only the manual mode is asked about; nothing here is random, so it can be tested with --today."""
+    if v.integrate_review != "human":
+        return ""
+    prompt = v.config["integrate_review_prompt"]
+    if not prompt.get("asked"):
+        return "first"
+    try:
+        waited = (v.today - parse_day(prompt["asked"])).days
+    except ValueError:
+        return ""
+    if waited < int(prompt.get("wait_days") or prompt["first_days"]):
+        return ""
+    return "due" if integrate_commits_since(v, prompt.get("asked_head")) >= int(prompt["min_commits"]) else ""
+
+
+def review_prompt_lines(v: Vault) -> list:
+    status = review_prompt_status(v)
+    prompt = v.config["integrate_review_prompt"]
+    if status == "first":
+        return ["", "## FIRST USE: the user hasn't chosen how /integrate is reviewed",
+                "Before step 1, ask once, in the user's language and in two or three lines: keep approving every diff "
+                "by hand (manual, the default), or approve only the plan and let judge agents check each block, with "
+                "only the blocks they send back waiting for the user (automatic). Say it can be changed any time with "
+                "/config. Record the answer with `srs.py config --integrate-review human` (manual) or "
+                "`srs.py config --integrate-review agent` (automatic), and follow the mode the user chose, not the "
+                "one shown above."]
+    if status == "due":
+        n = integrate_commits_since(v, prompt.get("asked_head"))
+        return ["", "## Reminder due: the automatic review",
+                f"The user has approved {plural(n, 'block')} by hand since {prompt['asked']}. After the closing line "
+                "(step 6), add one line: automatic review exists (the user approves the plan, judge agents check the "
+                "blocks), and ask whether to switch. Yes: `srs.py config --integrate-review agent`. No: "
+                "`srs.py config --remind-later`, which postpones the next reminder. Don't mention it before then, "
+                "and don't mention it again in this run."]
+    return []
+
+
 def cmd_config(args):
     v = open_vault(args)
     wanted = {}
@@ -2024,27 +2088,44 @@ def cmd_config(args):
             raise SrsError("--daily-limit must be 1 or more.")
         wanted["daily_limit"] = args.daily_limit
     changes = {k: value for k, value in wanted.items() if v.sched[k] != value}
-    mode = args.integrate_review
-    mode_change = mode is not None and mode != v.config.get("integrate_review")
-    if (wanted or mode is not None) and not changes and not mode_change:
+    mode, current = args.integrate_review, v.config.get("integrate_review")
+    prompt = v.config["integrate_review_prompt"]
+    summary = [f"{k} {v.sched[k]} -> {value}" for k, value in changes.items()]
+    review_raw = {}  # what goes into the file for the integrate review settings
+    if args.remind_later:
+        if (mode or current) != "human":
+            raise SrsError("--remind-later only applies while the /integrate review is manual (human).")
+        wait = min(int(prompt.get("wait_days") or prompt["first_days"]) * 2, int(prompt["max_days"]))
+        prompt_raw = {"asked": v.today.isoformat(), "asked_head": head_sha(v), "wait_days": wait}
+        review_raw["prompt"] = prompt_raw
+        summary.append(f"integrate_review reminder in {wait} days")
+    if mode is not None and (mode != current or not prompt.get("asked")):
+        # A first answer counts even when it keeps the manual mode: it ends the question.
+        summary.append(f"integrate_review {current} -> {mode}" if mode != current else f"integrate_review {mode} kept")
+        review_raw["mode"] = mode
+        if not args.remind_later:
+            review_raw["prompt"] = {"asked": v.today.isoformat(), "asked_head": head_sha(v),
+                                    "wait_days": int(prompt["first_days"])}
+    if (wanted or mode is not None or args.remind_later) and not summary:
         print("Nothing changed.")
-    if changes or mode_change:
+    if summary:
         repo = require_repo(v)
         path = v.srs / "config.json"
         raw = read_json(path, {})  # the file as written: load_config's defaults stay out of it
         for key, value in changes.items():
             raw.setdefault("scheduling", {})[key] = value
-        summary = [f"{k} {v.sched[k]} -> {value}" for k, value in changes.items()]
-        if mode_change:
-            summary.append(f"integrate_review {v.config.get('integrate_review')} -> {mode}")
-            raw["integrate_review"] = mode
-            v.config["integrate_review"] = mode
+        if "mode" in review_raw:
+            raw["integrate_review"] = review_raw["mode"]
+            v.config["integrate_review"] = review_raw["mode"]
+        if "prompt" in review_raw:
+            raw.setdefault("integrate_review_prompt", {}).update(review_raw["prompt"])
+            prompt.update(review_raw["prompt"])
         write_json(path, raw)
-        summary = ", ".join(summary)
+        text = ", ".join(summary)
         # Path-limited, so an open session's edits stay out and its discard can't revert this.
-        sha = repo.commit([f"{SRS_DIR}/config.json"], f"config: {summary}")
+        sha = repo.commit([f"{SRS_DIR}/config.json"], f"config: {text}")
         v.sched.update(changes)
-        print(f"Committed {sha}: config: {summary}.")
+        print(f"Committed {sha}: config: {text}.")
     print("\n".join(pace_lines(v) + [review_mode_line(v)]))
 
 
@@ -3243,6 +3324,7 @@ def context_integrate(v: Vault, extra: list) -> list:
     out += session_lines(v)
     out.append(queue_summary(state, v))
     out.append(f"Review mode: {v.integrate_review}")
+    out += review_prompt_lines(v)
     rel, path = block_source(v, source)
     out.append("")
     if not path.exists():
@@ -3537,6 +3619,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--new-per-day", type=int, help="new concepts per day (0 pauses them)")
     p.add_argument("--daily-limit", type=int, help="concepts per day, reviews and new together")
     p.add_argument("--integrate-review", choices=REVIEW_MODES, help="who reviews /integrate: you (human) or judge agents (agent)")
+    p.add_argument("--remind-later", action="store_true", help="postpone the reminder to try the agent review")
     p.set_defaults(func=cmd_config)
 
     sub.add_parser("check", help="deterministic maintenance checks").set_defaults(func=cmd_check)

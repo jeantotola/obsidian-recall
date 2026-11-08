@@ -2770,6 +2770,125 @@ class AgentReviewTest(VaultCase):
         return json.loads(proc.stdout)["systemMessage"]
 
 
+class ReviewPromptTest(VaultCase):
+    """The one-time question about the agent review, and the reminders to try it. Nothing random."""
+
+    def setUp(self):
+        super().setUp()
+        self.count = 0
+
+    def context(self, today="2026-01-10"):
+        return self.srs("context", "integrate", today=today).stdout
+
+    def integrate_commits(self, n, subject="integrate: Block"):
+        for _ in range(n):
+            self.count += 1
+            self.write("Math/Bayes.md", f"# Bayes\nversion {self.count}\n")
+            self.git("add", "-A")
+            self.git("commit", "-q", "-m", f"{subject} {self.count}")
+
+    def prompt(self):
+        return json.loads((self.vault / ".srs/config.json").read_text())["integrate_review_prompt"]
+
+    def test_the_first_use_asks_and_the_answer_is_kept(self):
+        self.assertIn("## FIRST USE", self.context())
+        self.assertIn("Review mode: human", self.context())
+        out = self.srs("config", "--integrate-review", "human").stdout
+        self.assertIn("config: integrate_review human kept", out)
+        self.assertEqual(self.git("log", "-1", "--format=%s").strip(), "config: integrate_review human kept")
+        prompt = self.prompt()
+        self.assertEqual((prompt["asked"], prompt["wait_days"]), ("2026-01-10", 14))
+        self.assertEqual(prompt["asked_head"], self.git("rev-parse", "HEAD~1").strip())
+        self.assertNotIn("FIRST USE", self.context())
+        self.assertIn("Nothing changed.", self.srs("config", "--integrate-review", "human").stdout)
+
+    def test_choosing_the_agent_review_ends_the_question_too(self):
+        self.srs("config", "--integrate-review", "agent")
+        self.assertEqual(self.prompt()["asked"], "2026-01-10")
+        self.assertNotIn("FIRST USE", self.context())
+        self.integrate_commits(12)
+        self.assertNotIn("Reminder due", self.context("2026-06-01"))  # nothing to remind in the automatic mode
+
+    def test_an_agent_vault_that_was_never_asked_is_not_asked(self):
+        config = json.loads((self.vault / ".srs/config.json").read_text())
+        config["integrate_review"] = "agent"
+        (self.vault / ".srs/config.json").write_text(json.dumps(config))
+        self.assertNotIn("FIRST USE", self.context())
+
+    def test_the_reminder_needs_both_the_days_and_the_commits(self):
+        self.srs("config", "--integrate-review", "human")
+        self.integrate_commits(9)
+        self.assertNotIn("Reminder due", self.context("2026-01-24"))  # 14 days, 9 blocks
+        self.integrate_commits(1)
+        self.assertNotIn("Reminder due", self.context("2026-01-23"))  # 13 days, 10 blocks
+        self.assertIn("## Reminder due", self.context("2026-01-24"))  # 14 days, 10 blocks
+        self.assertIn("approved 10 blocks by hand since 2026-01-10", self.context("2026-02-20"))
+
+    def test_only_blocks_count_not_the_review_list_commits(self):
+        self.srs("config", "--integrate-review", "human")
+        self.integrate_commits(9)
+        self.integrate_commits(5, subject="integrate: queue 2 concepts")
+        self.integrate_commits(3, subject="quiz: 5/5")
+        self.assertNotIn("Reminder due", self.context("2026-03-01"))
+
+    def test_not_now_postpones_the_next_reminder_up_to_the_limit(self):
+        self.srs("config", "--integrate-review", "human")
+        waits = []
+        day = dt.date(2026, 1, 10)
+        for _ in range(4):
+            self.integrate_commits(10)
+            day += dt.timedelta(days=self.prompt()["wait_days"])
+            self.assertIn("Reminder due", self.context(day.isoformat()))
+            out = self.srs("config", "--remind-later", today=day.isoformat()).stdout
+            waits.append(self.prompt()["wait_days"])
+            self.assertIn("integrate_review reminder in", out)
+        self.assertEqual(waits, [28, 41, 41, 41])
+        self.assertEqual(self.prompt()["asked"], day.isoformat())
+        self.assertNotIn("Reminder due", self.context(day.isoformat()))
+        self.integrate_commits(10)
+        self.assertNotIn("Reminder due", self.context((day + dt.timedelta(days=40)).isoformat()))
+        self.assertIn("Reminder due", self.context((day + dt.timedelta(days=41)).isoformat()))
+
+    def test_remind_later_only_applies_to_the_manual_mode(self):
+        self.srs("config", "--integrate-review", "agent")
+        proc = self.srs("config", "--remind-later", check=False)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("only applies while", proc.stderr)
+
+    def test_switching_back_to_manual_starts_the_wait_again(self):
+        self.srs("config", "--integrate-review", "agent")
+        self.integrate_commits(12)
+        self.srs("config", "--integrate-review", "human", today="2026-03-01")
+        self.assertEqual(self.prompt()["asked"], "2026-03-01")
+        self.assertNotIn("Reminder due", self.context("2026-03-20"))
+        self.integrate_commits(10)
+        self.assertIn("Reminder due", self.context("2026-03-15"))
+
+    def test_the_limits_come_from_the_config(self):
+        config = json.loads((self.vault / ".srs/config.json").read_text())
+        config["integrate_review_prompt"].update(min_commits=2, first_days=3, max_days=5)
+        (self.vault / ".srs/config.json").write_text(json.dumps(config))
+        self.srs("config", "--integrate-review", "human")
+        self.integrate_commits(2)
+        self.assertIn("Reminder due", self.context("2026-01-13"))
+        self.srs("config", "--remind-later", today="2026-01-13")
+        self.assertEqual(self.prompt()["wait_days"], 5)  # 3 doubled, capped at 5
+
+    def test_a_rewritten_history_gives_no_reminder(self):
+        self.srs("config", "--integrate-review", "human")
+        self.integrate_commits(10)
+        config = json.loads((self.vault / ".srs/config.json").read_text())
+        config["integrate_review_prompt"]["asked_head"] = "0" * 40
+        (self.vault / ".srs/config.json").write_text(json.dumps(config))
+        self.assertNotIn("Reminder due", self.context("2026-06-01"))
+
+    def test_the_skill_tells_what_to_do_with_both_messages(self):
+        skill = (ROOT / "skills/integrate/SKILL.md").read_text()
+        self.assertIn("FIRST USE", skill)
+        self.assertIn("Reminder due", skill)
+        self.assertIn("srs.py config --remind-later", skill)
+
+
 class ReviewAgentsTest(unittest.TestCase):
     """The hook and the two judge agents that the agent review relies on."""
 

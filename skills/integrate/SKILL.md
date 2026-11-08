@@ -18,6 +18,7 @@ The block above comes from Recall's script. Call the script as `python3 ${CLAUDE
 - If the block says NOT SET UP, tell the user to run /setup, and stop.
 - If it reports an INTERRUPTED SESSION, show what was left uncommitted and ask whether to keep or discard it; do what it says, then continue.
 - If the source has no blocks, say so, and stop.
+- If the block has a **FIRST USE** section, do what it says before step 1: ask the question once and record the answer. Use the mode the user chose from then on.
 - The block says `Review mode: human` or `agent`. It decides how step 3 ends: the user approves each diff (human), or judge agents check each block and the user supervises only the blocks they send back (agent). The plan in step 2 is approved by the user in both modes.
 - When the source is a file other than the inbox, add `--file "<path>"` to every `srs.py inbox` command, and to `srs.py review prepare` and `srs.py review park`.
 
@@ -62,4 +63,4 @@ The block above comes from Recall's script. Call the script as `python3 ${CLAUDE
 
 5. Apply the answer: `srs.py add --source integrate "<Concept>" "<Concept>" ...` for the chosen concepts, and `srs.py update "<Concept>" --focus "<one line on what is new>"` for each `[review]` concept with new content. Then `srs.py commit -m "integrate: queue <N> concepts"` ("1 concept" when there is one). If nothing was chosen or updated, skip the commit.
 
-6. Run `srs.py end`, and close with one line: blocks integrated, blocks left, concepts queued; in agent mode, also how many blocks wait for supervision.
+6. Run `srs.py end`, and close with one line: blocks integrated, blocks left, concepts queued; in agent mode, also how many blocks wait for supervision. If the block has a **Reminder due** section, follow it right after that line: one line, a question, and `srs.py config --integrate-review agent` or `srs.py config --remind-later` according to the answer.

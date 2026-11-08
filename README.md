@@ -82,6 +82,8 @@ By default you approve every diff. With `integrate_review` set to `agent` (ask `
 - **The script's checks**, which cost nothing: the index warnings, links that don't resolve or point to a heading that doesn't exist, and existing text that was rewritten or removed on a page the plan doesn't name.
 - **Judge agents that only read.** `diff-judge` (Haiku, always) checks that your wording was kept, that the block landed where the plan says, that an error in your text was not corrected silently, and that every rewrite or move is in the plan. `concept-judge` (Sonnet, only when the block adds a heading or an index concept) checks that each new concept sits on the page that owns it, isn't a duplicate, and is in the index. They return a verdict and never text; Claude reads it, revises once if it agrees, and the judges don't look again.
 
+The manual mode is the default. The first time you run `/integrate`, it asks once whether to keep it, and your answer is saved. After that, while you stay manual, it reminds you now and then that the automatic mode exists: at the end of a run, once you have approved at least 10 blocks and 14 days have passed since your last answer. Answer "not now" and the next reminder waits twice as long (14, 28, then 41 days at most). Switch any time with `/config`.
+
 A block that doesn't pass is set aside with the reason, the other blocks go on, and at the end you choose to look at the set-aside blocks now, with the usual diff, or later: they stay in the inbox, and the welcome message counts them. The final list of concepts for the quiz is still yours. Each commit message lists the verdicts, so `git log` is the audit and `git revert` undoes.
 
 ### Welcome message
@@ -219,6 +221,7 @@ To check retention, run `python3 <plugin folder>/scripts/srs.py stats` in the va
 | `paths.folder_map` | `folders.md` | Folder map: what each top-level folder takes, used by `/integrate` with `folders` |
 | `new_page_placement` | `folders` | `folders`: `/integrate` puts a new page in the existing folder whose topic fits best, or proposes a new folder in the vault's naming style. `flat`: every new page goes in `paths.new_pages` |
 | `inbox_heading_level` | `2` | Heading level that opens an inbox block |
+| `integrate_review_prompt` | see below | The one-time question and the reminders while `integrate_review` is `human`. `first_days` (`14`): wait after an answer; `max_days` (`41`): the longest wait, since each "not now" doubles it; `min_commits` (`10`): blocks approved since the last answer before a reminder. `asked`, `asked_head` and `wait_days` are kept by `srs.py config`: don't edit them |
 | `integrate_review` | `human` | `human`: you approve each diff of `/integrate`. `agent`: you approve the plan, then the script's checks and the judge agents decide each block, and you supervise only the blocks they send back |
 | `exclude` | `[]` | Patterns to ignore: `folder/`, `*.excalidraw.md`, `Daily/*.md` |
 | `scheduling.algorithm` | `anki` | `anki` or `thirds` |
