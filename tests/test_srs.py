@@ -1963,7 +1963,8 @@ class WelcomeTest(VaultCase):
         self.assertEqual([(e["matcher"], [h["command"] for h in e["hooks"]]) for e in hooks["SessionStart"]],
                          [("startup", ['python3 "${CLAUDE_PLUGIN_ROOT}/scripts/srs.py" welcome'])])
         self.assertEqual([(e["matcher"], [h["command"] for h in e["hooks"]]) for e in hooks["PreToolUse"]],
-                         [("Edit|Write|MultiEdit|NotebookEdit|Bash", ['python3 "${CLAUDE_PLUGIN_ROOT}/hooks/guard.py"'])])
+                         [("Edit|Write|MultiEdit|NotebookEdit|Bash", ['python3 "${CLAUDE_PLUGIN_ROOT}/hooks/guard.py"']),
+                          ("SubagentHandback", ['python3 "${CLAUDE_PLUGIN_ROOT}/scripts/srs.py" capture-verdict'])])
 
     def test_hook_command_with_spaces_and_accents_in_the_paths(self):
         plugin = self.tmp / "Área de Plugins" / "recall"
@@ -2195,7 +2196,7 @@ class QuizAsksItselfTest(unittest.TestCase):
         self.assertFalse((ROOT / "agents/question-drafter.md").exists())
         self.assertEqual(
             sorted(p.name for p in (ROOT / "agents").iterdir()),
-            ["index-drafter.md", "page-auditor.md"],
+            ["concept-judge.md", "diff-judge.md", "index-drafter.md", "page-auditor.md"],
         )
         for path in ("skills", "agents", "hooks", "docs", "README.md", "rules.md", "scripts"):
             target = ROOT / path
@@ -2767,6 +2768,54 @@ class AgentReviewTest(VaultCase):
         proc = subprocess.run([sys.executable, str(SRS), "--today", "2026-01-10", "welcome"], cwd=str(self.vault),
                               env=self.env, capture_output=True, text=True, input="")
         return json.loads(proc.stdout)["systemMessage"]
+
+
+class ReviewAgentsTest(unittest.TestCase):
+    """The hook and the two judge agents that the agent review relies on."""
+
+    def agent(self, name):
+        text = (ROOT / "agents" / f"{name}.md").read_text()
+        return text.split("---")[1], text
+
+    def test_the_hooks_are_registered(self):
+        hooks = json.loads((ROOT / "hooks/hooks.json").read_text())["hooks"]
+        handback = [h for h in hooks["PreToolUse"] if h["matcher"] == "SubagentHandback"]
+        stop = hooks["SubagentStop"]
+        self.assertEqual((len(handback), len(stop)), (1, 1))
+        for entry in (handback[0], stop[0]):
+            self.assertEqual(entry["hooks"][0]["command"],
+                             'python3 "${CLAUDE_PLUGIN_ROOT}/scripts/srs.py" capture-verdict')
+        matcher = stop[0]["matcher"]
+        self.assertTrue(re.fullmatch(matcher, "recall:diff-judge"))
+        self.assertTrue(re.fullmatch(matcher, "recall:concept-judge"))
+        self.assertFalse(re.search(matcher, "recall:page-auditor"))
+        self.assertFalse(re.search(matcher, "diff-judge"))  # a bare name is not the plugin's agent
+        guard = [h for h in hooks["PreToolUse"] if h["matcher"] != "SubagentHandback"]
+        self.assertIn("guard.py", guard[0]["hooks"][0]["command"])
+
+    def test_the_judges_only_read(self):
+        for name, model in (("diff-judge", "haiku"), ("concept-judge", "sonnet")):
+            front, text = self.agent(name)
+            self.assertIn(f"name: {name}", front)
+            self.assertIn(f"model: {model}", front)
+            self.assertIn("tools: Read, Glob, Grep\n", front)
+            for letter in srs.JUDGES[name]:
+                self.assertIn(f"- **{letter}.", text)
+            self.assertIn("never edit files", text)
+
+    def test_the_example_in_each_prompt_is_a_valid_verdict(self):
+        for name in srs.JUDGES:
+            _, text = self.agent(name)
+            example = text.split("```text\n")[1].split("```")[0].replace("<id>", "0a1b2c3d")
+            parsed = srs.parse_verdict(example)
+            self.assertEqual((parsed["judge"], parsed["verdict"]), (name, "REVISE"))
+            self.assertEqual(sorted(parsed["results"]), sorted(srs.JUDGES[name]))
+
+    def test_the_judge_names_match_the_hook_and_the_plugin(self):
+        manifest = json.loads((ROOT / ".claude-plugin/plugin.json").read_text())
+        self.assertEqual(manifest["name"], srs.JUDGE_PLUGIN)
+        for name in srs.JUDGES:
+            self.assertTrue((ROOT / "agents" / f"{name}.md").is_file())
 
 
 if __name__ == "__main__":
