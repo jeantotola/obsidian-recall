@@ -89,7 +89,7 @@ Recall's own rules, built for pass and fail: no ease, a fixed multiplier, and a 
 
 **Lapses.** Every cut keeps at least `min_interval` days. Each fail after graduation counts as a lapse, including fails while relearning, which is why the default leech threshold is higher than Anki's.
 
-**Fuzz.** Intervals of `fuzz_min_interval` days or more move by up to `fuzz` (5%) either way.
+**Fuzz.** Intervals of `fuzz_min_interval` days or more move by up to `fuzz` (5%) either way, and by at least 1 day: 3 days becomes 2, 3 or 4; 8 becomes 7, 8 or 9; 100 moves by up to 5. Without the 1-day floor, 5% would round to nothing below 10 days, and concepts passed together would stay due on the same days for their first reviews. `fuzz` at `0` turns it off.
 
 **Example.** A concept with a 90-day interval is failed. It comes back the next day; a pass sets the interval to 30 days. Failing again instead sets the pending interval to 10 days and brings it back the next day; then 3, then 1.
 

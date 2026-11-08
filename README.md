@@ -185,7 +185,7 @@ Answers are pass or fail. Each concept in the schedule has one date, the day fro
 | Pass in review | Interval × the concept's ease, 2.5 to start | Interval × 2.5 |
 | Fail in review (a lapse) | Ease − 0.2, never below 1.3. After the next pass the interval restarts at 1 day | After the next pass the interval is a third of what it was |
 | Another fail while relearning | Back the next day, no extra penalty | A third of that third, down to 1 day |
-| Spread of intervals | Anki's fuzz: about ±1 day at 3 days, ±3 at 20, ±7 at 100 | Up to ±5% from 3 days on |
+| Spread of intervals | Anki's fuzz: about ±1 day at 3 days, ±3 at 20, ±7 at 100 | ±5% and at least ±1 day, from 3 days on |
 | Leech | 8 lapses | 10 lapses, counting fails while relearning |
 
 Both share the rest:
@@ -199,6 +199,7 @@ Both share the rest:
 - New content for a concept in review brings it back the next day with a question on the new part. A pass keeps the interval; a fail is a normal lapse.
 - Up to 20 concepts a day: learning, relearning and updated concepts first, then reviews (most overdue first), then new concepts, at most 5 a day and only if there is room.
 - A new concept waits until the next day. The study day starts at 4 a.m., so a late-night session counts as the same day.
+- A new concept also waits while the concept on the line just above or below it in the index is in the day's list, so concepts written side by side don't start, and stay, on the same days. Its slot goes to the next new concept.
 - Fuzz comes from the concept name and the day, so the same answers always give the same dates.
 
 **Which one?** `anki` is the familiar baseline. With only pass and fail, though, an Anki ease can only go down, so a concept that lapsed a few times grows slowly for good: Anki's "ease hell". `thirds` has no ease. A lapse costs part of the interval once, and the concept then grows at the normal pace again.
@@ -259,7 +260,7 @@ Parameters of `thirds`, under `scheduling.thirds`:
 | `multiplier` | `2.5` | Interval growth on a pass |
 | `lapse_divisor` | `3` | Interval cut on a lapse, and again on each fail while relearning |
 | `min_interval` | `1` | Days, the floor for any cut |
-| `fuzz` | `0.05` | Spread of intervals, either way; `0` turns it off |
+| `fuzz` | `0.05` | Spread of intervals, either way, and at least 1 day; `0` turns it off |
 | `fuzz_min_interval` | `3` | Days; shorter intervals are never spread |
 | `leech_threshold` | `10` | Lapses that flag a leech |
 

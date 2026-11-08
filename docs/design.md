@@ -108,6 +108,7 @@ A concept is **new** (queued, never asked), **learning** (failed before its firs
 - Up to 20 concepts per study day, counting what was already answered that day. Running `/quiz` again the same day continues where you stopped.
 - Order: due learning, relearning and updated concepts, by date; then due reviews, most overdue first (ties: shorter interval first); then new concepts.
 - New concepts: at most 5 per day, and only in slots left over. Concepts from `/integrate` come before concepts from `/promote`, in the order they were queued.
+- Index neighbors: a new concept waits when the concept on the line just above or below it, in the same page's section of the index, is already in the day's list or was answered that day. Concepts written side by side are often defined in terms of each other, so a question on one gives the other away. The waiting concept keeps its place at the front of the queue and its slot goes to the next new concept, so a page's queue `a b c d` starts as `a c`, then `b d`. Reviews never wait, and a waiting concept doesn't count as carried over.
 - When the reviews alone exceed the limit, the rest carry over to the next day and no new concept starts.
 
 In practice, 20 concepts a day sustain about 2 to 3 new concepts per day once the schedule fills up, because each concept is reviewed about 7 times in its first year. A session of 20 open questions takes about 20 to 30 minutes.

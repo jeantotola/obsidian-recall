@@ -707,11 +707,14 @@ def unit_random(name: str, day: dt.date) -> float:
 
 
 def fuzzed(interval: int, name: str, day: dt.date, params: dict) -> int:
-    """thirds: spread an interval by up to +/- the fuzz share, deterministically."""
+    """thirds: spread an interval by up to +/- the fuzz share, and at least +/- 1 day,
+    deterministically. Without the 1-day floor, 5% rounds to nothing below 10 days and
+    concepts learned together would stay due on the same days."""
     if interval < params["fuzz_min_interval"] or params["fuzz"] <= 0:
         return interval
     r = unit_random(name, day) * 2 - 1
-    return max(params["min_interval"], interval + round_half_up(interval * params["fuzz"] * r))
+    spread = max(1.0, interval * params["fuzz"])
+    return max(params["min_interval"], interval + round_half_up(spread * r))
 
 
 ANKI_FUZZ_RANGES = ((2.5, 7.0, 0.15), (7.0, 20.0, 0.10), (20.0, math.inf, 0.05))
@@ -893,10 +896,41 @@ def is_due(rec: dict, today: dt.date) -> bool:
     return due is not None and due <= today
 
 
-def daily_list(state: dict, sched: dict, today: dt.date):
+def index_neighbors(idx: Index) -> dict:
+    """For each concept (by norm_key), the concepts on the lines just above and below
+    it in its page's section of the index: they are usually written side by side and
+    defined in terms of each other."""
+    found = defaultdict(set)
+    for page in idx.pages:
+        keys = [norm_key(c.name) for c in page.concepts]
+        for a, b in zip(keys, keys[1:]):
+            if a != b:
+                found[a].add(b)
+                found[b].add(a)
+    return dict(found)
+
+
+def vault_neighbors(v) -> dict:
+    """index_neighbors for the vault's index, read without resolving its links. An
+    unreadable index gives no neighbors: the quiz goes on, and /maintenance reports it."""
+    path = v.root / v.index_rel
+    try:
+        text = read_text(path) if path.exists() else ""
+    except (SrsError, OSError):
+        text = ""
+    return index_neighbors(parse_index(text))
+
+
+def daily_list(state: dict, sched: dict, today: dt.date, neighbors=None):
     """Today's quiz list and a summary. Learning, relearning and updated concepts
     first, then reviews (most overdue first, shorter interval first), then new
-    concepts in the slots left, up to the daily limit."""
+    concepts in the slots left, up to the daily limit.
+
+    A new concept waits for another day when a neighbor in the index (see
+    index_neighbors) is already in today's list or was answered today, so that two
+    concepts defined side by side don't start, and stay, on the same days. A waiting
+    concept keeps its place at the front of the queue; reviews never wait."""
+    neighbors = neighbors or {}
     concepts = state["concepts"]
     t = today.isoformat()
     done = [n for n, r in concepts.items() if r.get("last") == t]
@@ -927,7 +961,17 @@ def daily_list(state: dict, sched: dict, today: dt.date):
     slots = 0
     if carried == 0:
         slots = max(0, min(sched["new_per_day"] - len(new_done), capacity - len(items)))
-    items += waiting_new[:slots]
+    taken = {norm_key(n) for n in done + items}
+    for n in waiting_new:
+        if slots <= 0:
+            break
+        key = norm_key(n)
+        if neighbors.get(key, set()) & taken:
+            continue
+        items.append(n)
+        taken.add(key)
+        slots -= 1
+    started = sum(1 for n in items if concepts[n]["phase"] == "new")
     info = {
         "done": len(done),
         "capacity": capacity,
@@ -935,12 +979,12 @@ def daily_list(state: dict, sched: dict, today: dt.date):
         "learning": len([n for n in items if first(concepts[n])]),
         "reviews": len([n for n in items if concepts[n]["phase"] == "review" and not first(concepts[n])]),
         "new": len([n for n in items if concepts[n]["phase"] == "new"]),
-        "new_waiting": len(waiting_new) - min(slots, len(waiting_new)),
+        "new_waiting": len(waiting_new) - started,
     }
     return items, info
 
 
-def next_due(state: dict, sched: dict, today: dt.date):
+def next_due(state: dict, sched: dict, today: dt.date, neighbors=None):
     """The next study day whose list really has questions, and how many. (None, 0) when none
     ever will at this pace: a queue of new concepts with new_per_day at 0 is never asked."""
     candidates = {today + days(1)}
@@ -953,7 +997,7 @@ def next_due(state: dict, sched: dict, today: dt.date):
         if day and day > today:
             candidates.add(day)
     for day in sorted(candidates):
-        items, _ = daily_list(state, sched, day)
+        items, _ = daily_list(state, sched, day, neighbors)
         if items:
             return day, len(items)
     return None, 0
@@ -1757,7 +1801,8 @@ def cmd_record(args):
     rec = state["concepts"][name]
     if rec.get("last") == v.today.isoformat():
         raise SrsError(f"{name} was already answered today; repeats in the same session don't count.", 2)
-    items, _ = daily_list(state, v.sched, v.today)
+    neighbors = vault_neighbors(v)
+    items, _ = daily_list(state, v.sched, v.today, neighbors)
     if name not in items:
         raise SrsError(f"{name} is not in today's list.", 2)
     before = rec["phase"]
@@ -1773,7 +1818,7 @@ def cmd_record(args):
     save_state(v, state)
     append_log(v, [v.today.isoformat(), name, args.result, before, interval])
     print(describe_answer(name, before, updated, v.today, v.leech_at) + note)
-    left, info = daily_list(state, v.sched, v.today)
+    left, info = daily_list(state, v.sched, v.today, neighbors)
     total = info["done"] + len(left)
     if left:
         print(f"Next question: {info['done'] + 1}/{total}.")
@@ -2004,7 +2049,7 @@ def retention_verdict(rate: float, target: list, knob: str) -> str:
 def pace_lines(v: Vault) -> list:
     """The daily pace and what it means for today's list."""
     sched = v.sched
-    _, info = daily_list(load_state(v), sched, v.today)
+    _, info = daily_list(load_state(v), sched, v.today, vault_neighbors(v))
     out = [
         f"New concepts per day: {sched['new_per_day']}. "
         f"Daily limit, reviews and new concepts together: {sched['daily_limit']}.",
@@ -2444,7 +2489,8 @@ def welcome_message(v: Vault) -> str:
     words = welcome_strings(v.config.get("language"))
 
     state = load_state(v)
-    items, info = daily_list(state, v.sched, v.today)
+    neighbors = vault_neighbors(v)
+    items, info = daily_list(state, v.sched, v.today, neighbors)
     t = v.today.isoformat()
     rows = [r for r in read_log(v) if r["day"] == t]
 
@@ -2462,7 +2508,7 @@ def welcome_message(v: Vault) -> str:
         passed = sum(1 for r in rows if r["result"] == "pass")
         lines.append(words["done"].format(passed=passed, answered=len(rows)))
     else:
-        nxt, _ = next_due(state, v.sched, v.today)
+        nxt, _ = next_due(state, v.sched, v.today, neighbors)
         if nxt is None and state["concepts"]:
             lines.append(words["paused"].format(waiting=welcome_count(words, len(state["concepts"]), "waiting")))
         elif nxt is None:
@@ -3131,7 +3177,8 @@ def annotated_index(text: str, idx: Index, state: dict) -> list:
 
 
 def render_due(v: Vault, state: dict, idx: Index) -> list:
-    items, info = daily_list(state, v.sched, v.today)
+    neighbors = index_neighbors(idx)
+    items, info = daily_list(state, v.sched, v.today, neighbors)
     owners = idx.by_key()
     out = [
         f"Done today: {info['done']} of {v.sched['daily_limit']}. To ask now: {len(items)} "
@@ -3139,7 +3186,7 @@ def render_due(v: Vault, state: dict, idx: Index) -> list:
         f"Carried over to tomorrow: {info['carried']}. New concepts still waiting: {info['new_waiting']}."
     ]
     if not items:
-        nxt, count = next_due(state, v.sched, v.today)
+        nxt, count = next_due(state, v.sched, v.today, neighbors)
         if nxt:
             out.append(f"Nothing to ask today. Next: {nxt} ({count} concept{'s' if count != 1 else ''}).")
         elif state["concepts"]:

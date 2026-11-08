@@ -111,6 +111,22 @@ class ThirdsTest(unittest.TestCase):
         self.assertEqual(srs.fuzzed(2, "c", D("2026-01-01"), p), 2)
         self.assertEqual(srs.fuzzed(40, "c", D("2026-01-01"), p), srs.fuzzed(40, "c", D("2026-01-01"), p))
 
+    def test_fuzz_moves_short_intervals_by_a_day(self):
+        p = srs.THIRDS_DEFAULTS
+        for interval in (3, 8):
+            values = {srs.fuzzed(interval, f"c{i}", D("2026-01-01"), p) for i in range(200)}
+            self.assertEqual(values, {interval - 1, interval, interval + 1})
+        off = dict(p, fuzz=0)
+        self.assertEqual({srs.fuzzed(8, f"c{i}", D("2026-01-01"), off) for i in range(50)}, {8})
+
+    def test_concepts_passed_together_spread_after_graduating(self):
+        s = sched("thirds")
+        dues = set()
+        for i in range(30):
+            rec = {"phase": "review", "interval": 1, "last": "2026-01-01", "due": "2026-01-02"}
+            dues.add(srs.apply_answer(rec, True, D("2026-01-02"), s, f"n{i}")["due"])
+        self.assertEqual(dues, {"2026-01-04", "2026-01-05", "2026-01-06"})
+
     def test_review_pass_always_grows(self):
         s = sched("thirds")
         for interval in range(1, 60):
@@ -313,6 +329,63 @@ class DailyListTest(unittest.TestCase):
         items, info = srs.daily_list(self.make(concepts), sched(), D("2026-01-10"))
         self.assertEqual(len(items), 2)  # 5 per day, 3 already started today
         self.assertEqual(info["done"], 3)
+
+
+class NeighborTest(unittest.TestCase):
+    """New concepts on adjacent index lines don't start on the same day."""
+
+    INDEX = "## [[Page]]\n- a\n- b\n- c\n- d\n\n## [[Other]]\n- e\n"
+
+    def make(self, concepts):
+        return {"version": 1, "next_order": 100, "concepts": concepts, "flags": {"thin": {}}}
+
+    def neighbors(self):
+        return srs.index_neighbors(srs.parse_index(self.INDEX))
+
+    def new(self, *names):
+        return {n: srs.new_record("integrate", D("2026-01-01"), i) for i, n in enumerate(names)}
+
+    def test_neighbors_are_the_lines_above_and_below_in_the_same_page(self):
+        found = self.neighbors()
+        self.assertEqual(found["a"], {"b"})
+        self.assertEqual(found["b"], {"a", "c"})
+        self.assertEqual(found["d"], {"c"})
+        self.assertNotIn("e", found)  # alone in its page; d and e are in different pages
+
+    def test_alternate_concepts_start_on_alternate_days(self):
+        state = self.make(self.new("a", "b", "c", "d", "e"))
+        items, info = srs.daily_list(state, sched(), D("2026-01-10"), self.neighbors())
+        self.assertEqual(items, ["a", "c", "e"])
+        self.assertEqual(info["carried"], 0)  # waiting new concepts don't block tomorrow's new ones
+        self.assertEqual(info["new_waiting"], 2)
+        for n in items:
+            state["concepts"][n].update(phase="review", introduced="2026-01-10", last="2026-01-10",
+                                        due="2026-01-11", interval=1)
+        items, _ = srs.daily_list(state, sched(), D("2026-01-10"), self.neighbors())
+        self.assertEqual(items, [])  # still the same day: b and d keep waiting
+        state["concepts"].update({n: dict(state["concepts"][n], due="2026-01-20") for n in ("a", "c", "e")})
+        items, _ = srs.daily_list(state, sched(), D("2026-01-11"), self.neighbors())
+        self.assertEqual(items, ["b", "d"])
+
+    def test_a_neighbor_due_for_review_holds_a_new_concept_back(self):
+        concepts = self.new("b", "e")
+        concepts["a"] = {"phase": "review", "due": "2026-01-10", "interval": 3}
+        items, _ = srs.daily_list(self.make(concepts), sched(), D("2026-01-10"), self.neighbors())
+        self.assertEqual(items, ["a", "e"])
+
+    def test_reviews_never_wait(self):
+        concepts = {n: {"phase": "review", "due": "2026-01-10", "interval": 3} for n in "abcd"}
+        items, _ = srs.daily_list(self.make(concepts), sched(), D("2026-01-10"), self.neighbors())
+        self.assertEqual(items, ["a", "b", "c", "d"])
+
+    def test_the_freed_slot_goes_to_the_next_new_concept(self):
+        s = sched(new_per_day=2)
+        items, _ = srs.daily_list(self.make(self.new("a", "b", "e")), s, D("2026-01-10"), self.neighbors())
+        self.assertEqual(items, ["a", "e"])
+
+    def test_without_neighbors_the_list_is_unchanged(self):
+        items, _ = srs.daily_list(self.make(self.new("a", "b", "c")), sched(), D("2026-01-10"))
+        self.assertEqual(items, ["a", "b", "c"])
 
 
 class IndexTest(unittest.TestCase):
@@ -1292,7 +1365,8 @@ class GapTest(VaultCase):
 
     def setUp(self):
         super().setUp()
-        self.index("## [[Eigendecomposition]]\n- Eigenvectors\n- Eigenvalues\n")
+        # A line between the two keeps them from being index neighbors, which would start them on different days.
+        self.index("## [[Eigendecomposition]]\n- Eigenvectors\n- Spectrum\n- Eigenvalues\n")
         self.srs("add", "--source", "integrate", "Eigenvectors")
         self.srs("record", "Eigenvectors", "fail", "--gap", "Av = λv defines them", today=self.DAY)
 
@@ -1530,7 +1604,7 @@ class QuestionCountTest(VaultCase):
 
     def setUp(self):
         super().setUp()
-        self.index("## [[Eigendecomposition]]\n- Eigenvectors\n- Eigenvalues\n\n## [[Bayes]]\n- Bayes' theorem\n")
+        self.index("## [[Eigendecomposition]]\n- Eigenvectors\n- Spectrum\n- Eigenvalues\n\n## [[Bayes]]\n- Bayes' theorem\n")
         self.srs("add", "--source", "integrate", "Eigenvectors", "Eigenvalues", "Bayes' theorem")
 
     def due(self):
@@ -1548,6 +1622,19 @@ class QuestionCountTest(VaultCase):
         self.assertIn("Question count: start at 2/3, end at 3/3.", self.due())
         self.srs("record", "Eigenvalues", "pass", today=self.DAY)
         self.assertIn("Question count: start at 3/3, end at 3/3.", self.due())
+
+    def test_index_neighbors_start_on_different_days(self):
+        self.index("## [[Eigendecomposition]]\n- Eigenvectors\n- Eigenvalues\n\n## [[Bayes]]\n- Bayes' theorem\n")
+        due = self.due()
+        self.assertIn("Question count: start at 1/2, end at 2/2.", due)
+        self.assertNotIn("Eigenvalues", due)
+        out = self.srs("record", "Eigenvalues", "pass", today=self.DAY, check=False)
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("Next question: 2/2.", self.srs("record", "Eigenvectors", "pass", today=self.DAY).stdout)
+        # The next day Eigenvectors is back for its 1-day review, so Eigenvalues waits once more.
+        self.assertNotIn("Eigenvalues", self.srs("due", today="2026-01-12").stdout)
+        self.srs("record", "Eigenvectors", "pass", today="2026-01-12")
+        self.assertIn("Eigenvalues", self.srs("due", today="2026-01-13").stdout)
 
     def test_record_gives_the_next_count(self):
         self.assertIn("Next question: 2/3.", self.srs("record", "Eigenvectors", "fail", today=self.DAY).stdout)
@@ -1585,7 +1672,7 @@ class PrepareAheadTest(VaultCase):
 
     def setUp(self):
         super().setUp()
-        self.index("## [[Big page]]\n" + "".join(f"- {name}\n" for name in self.NAMES))
+        self.index("## [[Big page]]\n" + "".join(f"- {name}\n- Note on {name}\n" for name in self.NAMES))
         path = self.vault / ".srs/config.json"
         config = json.loads(path.read_text())
         config["scheduling"]["new_per_day"] = 12
@@ -1623,8 +1710,8 @@ class WelcomeTest(VaultCase):
 
     def setUp(self):
         super().setUp()
-        self.index("## [[Eigendecomposition]]\n- Eigenvectors\n- Eigenvalues\n\n## [[Bayes]]\n- Bayes' theorem\n"
-                   "- Fresh\n- Other\n")
+        self.index("## [[Eigendecomposition]]\n- Eigenvectors\n- Spectrum\n- Eigenvalues\n\n## [[Bayes]]\n- Bayes' theorem\n"
+                   "- Prior\n- Fresh\n- Posterior\n- Other\n")
         self.set_config(language="English")
         self.write("inbox.md", "")
 
