@@ -36,7 +36,7 @@ TEMPLATES = PLUGIN_ROOT / "templates"
 RULES_FILE = PLUGIN_ROOT / "rules.md"
 
 SYSTEM_FILE_NAMES = {"claude.md", "claude.local.md", "agents.md"}
-GITIGNORE_LINES = [".srs/session.json", ".obsidian/workspace*.json", ".trash/"]
+GITIGNORE_LINES = [".srs/session.json", ".srs/review/", ".obsidian/workspace*.json", ".trash/"]
 SESSION_EXCLUDE = ":(exclude).srs/session.json"
 LOCAL_SETTINGS = ".claude/settings.local.json"
 LOCAL_SETTINGS_EXCLUDE = f":(exclude){LOCAL_SETTINGS}"
@@ -49,6 +49,13 @@ DESC_SEP = " — "  # space, em dash, space
 SOURCE_RANK = {"integrate": 0, "promote": 1}
 EXCLUSION_HINTS = ("template", "attachment", "asset", "excalidraw", "daily", "journal", "archive")
 PHASES = ("new", "learning", "review", "relearning")
+REVIEW_MODES = ("human", "agent")
+REVIEW_DIR = "review"  # .srs/review/: state of the agent review, never committed
+JUDGES = {"diff-judge": "VPER", "concept-judge": "ODI"}  # agent name -> the criteria letters it answers
+JUDGE_PLUGIN = "recall"  # the plugin name that prefixes an agent type: recall:diff-judge
+WIKILINK_RE = re.compile(r"!?\[\[([^\]\n]+?)\]\]")
+ATTACHMENT_EXTS = {"png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "pdf", "mp3", "wav", "ogg", "mp4", "webm", "mov"}
+BLOCK_ID_RE = re.compile(r"[0-9a-f]{8}(?:-\d+)?")
 
 # Default parameters of the built-in scheduling algorithms (see docs/scheduling.md).
 # A vault overrides them under scheduling.<algorithm> in .srs/config.json.
@@ -90,6 +97,7 @@ DEFAULT_CONFIG = {
     "paths": {"inbox": "inbox.md", "index": "index.md", "new_pages": "wiki", "folder_map": "folders.md"},
     "new_page_placement": "folders",
     "inbox_heading_level": 2,
+    "integrate_review": "human",  # human: the user approves each diff; agent: judge agents review it
     "exclude": [],
     "scheduling": {
         "algorithm": "anki",
@@ -257,6 +265,14 @@ class Vault:
         if value not in PLACEMENTS:
             raise SrsError(f"Unknown new_page_placement '{value}'. Edit .srs/config.json to use one of: "
                            + ", ".join(PLACEMENTS) + ".")
+        return value
+
+    @property
+    def integrate_review(self) -> str:
+        value = self.config["integrate_review"]
+        if value not in REVIEW_MODES:
+            raise SrsError(f"Unknown integrate_review '{value}'. Edit .srs/config.json to use one of: "
+                           + ", ".join(REVIEW_MODES) + ".")
         return value
 
     @property
@@ -527,29 +543,41 @@ def parse_index(text: str) -> Index:
     return Index(pages=pages, problems=problems)
 
 
-def resolve_links(v: Vault, idx: Index) -> None:
-    """Resolve [[links]] the way Obsidian does: by file name when unique, by path otherwise."""
-    all_md = list_markdown(v.root)
+def link_tables(v: Vault):
+    """The two lookups Obsidian uses to resolve a link: by file name, and by path without .md."""
     by_stem = defaultdict(list)
     by_path = {}
-    for rel in all_md:
+    for rel in list_markdown(v.root):
         by_stem[Path(rel).stem.casefold()].append(rel)
         by_path[rel[:-3].casefold()] = rel
-    for page in idx.pages:
-        link = page.link.strip().replace("\\", "/")
-        if link.lower().endswith(".md"):
-            link = link[:-3]
-        link = link.strip("/")
-        if "/" in link:
-            exact = by_path.get(link.casefold())
-            if exact:
-                cands = [exact]
-            else:
-                suffix = "/" + link.casefold()
-                cands = [rel for key, rel in by_path.items() if key.endswith(suffix)]
+    return by_stem, by_path
+
+
+def link_candidates(tables, link: str) -> list:
+    """The files a link can mean: by file name when it has no slash, by path (or path suffix) otherwise."""
+    by_stem, by_path = tables
+    link = link.strip().replace("\\", "/")
+    if link.lower().endswith(".md"):
+        link = link[:-3]
+    link = link.strip("/")
+    if "/" in link:
+        exact = by_path.get(link.casefold())
+        if exact:
+            cands = [exact]
         else:
-            cands = list(by_stem.get(link.casefold(), []))
-        page.candidates = sorted(cands)
+            suffix = "/" + link.casefold()
+            cands = [rel for key, rel in by_path.items() if key.endswith(suffix)]
+    else:
+        cands = list(by_stem.get(link.casefold(), []))
+    return sorted(cands)
+
+
+def resolve_links(v: Vault, idx: Index) -> None:
+    """Resolve [[links]] the way Obsidian does: by file name when unique, by path otherwise."""
+    tables = link_tables(v)
+    for page in idx.pages:
+        cands = link_candidates(tables, page.link)
+        page.candidates = cands
         if len(cands) == 1:
             page.path = cands[0]
             page.status = "excluded" if is_excluded(v, page.path) else "ok"
@@ -1489,6 +1517,9 @@ def cmd_begin(args):
         raise SrsError(interrupted_report(repo, session), 3)
     snapped = repo.snapshot()
     session = {"command": args.command, "started": now_iso(), "touched": []}
+    if args.command == "integrate":
+        clean_review(v)  # leftovers of a session that never closed
+        prune_supervision(v)
     suggestion_notes = hide_suggestions(v) if args.command == "quiz" else []
     save_session(v, session)
     note = f" Committed your manual edits first ({plural(snapped, 'file')}, vault: manual edits)." if snapped else ""
@@ -1523,24 +1554,17 @@ def index_warnings(v: Vault, new_file: bool) -> list:
     return lines
 
 
-def cmd_diff(args):
-    v = open_vault(args)
-    repo = require_repo(v)
-    session = require_session(v)
-    changed = repo.status()
-    paths = [p for p in session.get("touched", []) if p in changed]
-    if not paths:
-        print("No changes to review.")
-        return
+def render_diff(v: Vault, repo: Repo, changed: dict, paths: list, warnings: bool = True) -> str:
+    """The text `srs.py diff` prints for these changed paths; with warnings=False, without the index warnings."""
     content = [p for p in paths if not p.startswith(SRS_DIR + "/")]
     state_files = [p for p in paths if p.startswith(SRS_DIR + "/")]
     tracked = [p for p in content if changed[p] != "??"]
     untracked = [p for p in content if changed[p] == "??"]
     chunks = []
-    if v.index_rel in content:
-        warnings = index_warnings(v, changed[v.index_rel] == "??")
-        if warnings:
-            chunks += warnings + [""]
+    if warnings and v.index_rel in content:
+        found = index_warnings(v, changed[v.index_rel] == "??")
+        if found:
+            chunks += found + [""]
     if tracked:
         chunks.append(git(["diff", "HEAD", "--stat", "--"] + tracked, v.root).stdout.rstrip())
     for p in untracked:
@@ -1553,7 +1577,19 @@ def cmd_diff(args):
         chunks.append(git(["diff", "--no-index", "--", os.devnull, p], v.root, check=False).stdout.rstrip())
     if state_files:
         chunks.append(f"\nState files also changed: {', '.join(state_files)}")
-    print("\n".join(chunks).strip("\n"))
+    return "\n".join(chunks).strip("\n")
+
+
+def cmd_diff(args):
+    v = open_vault(args)
+    repo = require_repo(v)
+    session = require_session(v)
+    changed = repo.status()
+    paths = [p for p in session.get("touched", []) if p in changed]
+    if not paths:
+        print("No changes to review.")
+        return
+    print(render_diff(v, repo, changed, paths))
 
 
 def cmd_commit(args):
@@ -1561,13 +1597,18 @@ def cmd_commit(args):
     repo = require_repo(v)
     session = require_session(v)
     paths = pending_paths(repo, session)
+    message = args.message
+    if args.review and paths:
+        message += "\n\n" + review_commit_body(v, repo, session, args.review)
     session["touched"] = []
     if not paths:
         save_session(v, session)
         print("Nothing to commit.")
         return
-    sha = repo.commit(paths, args.message)
+    sha = repo.commit(paths, message)
     save_session(v, session)
+    if args.review:
+        shutil.rmtree(str(block_review_dir(v, args.review)), ignore_errors=True)
     print(f"Committed {sha}: {args.message} ({len(paths)} file{'s' if len(paths) != 1 else ''}).")
 
 
@@ -1625,6 +1666,7 @@ def cmd_end(args):
         raise SrsError("Uncommitted changes from this session: " + ", ".join(pending)
                        + ". Commit them (srs.py commit -m ...) or discard them (srs.py discard) first.", 2)
     session_path(v).unlink()
+    clean_review(v)
     minutes = session_minutes(session) if session.get("command") == "quiz" else None
     duration = f" Duration: {minutes} min." if minutes is not None else ""
     print(f"Session for /{session.get('command')} closed.{duration}")
@@ -1639,6 +1681,7 @@ def cmd_abort(args):
     repo = require_repo(v)
     restored, removed, folders = discard_touched(v, repo, session, include_state=True)
     session_path(v).unlink()
+    clean_review(v)
     extra = f" and {len(folders)} empty folder(s)" if folders else ""
     print(f"Aborted /{session.get('command')}: restored {len(restored)} file(s), removed {len(removed)} new file(s){extra}.")
 
@@ -1962,6 +2005,13 @@ def pace_lines(v: Vault) -> list:
     return out
 
 
+def review_mode_line(v: Vault) -> str:
+    mode = v.integrate_review
+    what = ("you approve each diff" if mode == "human"
+            else "after the plan, agents review each block and you supervise only the blocks they send back")
+    return f"/integrate review: {mode} ({what})."
+
+
 def cmd_config(args):
     v = open_vault(args)
     wanted = {}
@@ -1974,21 +2024,28 @@ def cmd_config(args):
             raise SrsError("--daily-limit must be 1 or more.")
         wanted["daily_limit"] = args.daily_limit
     changes = {k: value for k, value in wanted.items() if v.sched[k] != value}
-    if wanted and not changes:
+    mode = args.integrate_review
+    mode_change = mode is not None and mode != v.config.get("integrate_review")
+    if (wanted or mode is not None) and not changes and not mode_change:
         print("Nothing changed.")
-    if changes:
+    if changes or mode_change:
         repo = require_repo(v)
         path = v.srs / "config.json"
         raw = read_json(path, {})  # the file as written: load_config's defaults stay out of it
         for key, value in changes.items():
             raw.setdefault("scheduling", {})[key] = value
+        summary = [f"{k} {v.sched[k]} -> {value}" for k, value in changes.items()]
+        if mode_change:
+            summary.append(f"integrate_review {v.config.get('integrate_review')} -> {mode}")
+            raw["integrate_review"] = mode
+            v.config["integrate_review"] = mode
         write_json(path, raw)
-        summary = ", ".join(f"{k} {v.sched[k]} -> {value}" for k, value in changes.items())
+        summary = ", ".join(summary)
         # Path-limited, so an open session's edits stay out and its discard can't revert this.
         sha = repo.commit([f"{SRS_DIR}/config.json"], f"config: {summary}")
         v.sched.update(changes)
         print(f"Committed {sha}: config: {summary}.")
-    print("\n".join(pace_lines(v)))
+    print("\n".join(pace_lines(v) + [review_mode_line(v)]))
 
 
 def pass_rate(rows: list) -> float:
@@ -2160,6 +2217,7 @@ def cmd_inbox(args):
         new_text = stripped + ("\r\n" if "\r\n" in text else "\n") if stripped else ""
     write_text(path, new_text)
     touch(v, rel)
+    forget_supervision(v, args.ids)
     left = len(blocks) - len(args.ids)
     print(f"Removed {len(args.ids)} block(s) from {rel}; {left} left.")
 
@@ -2202,6 +2260,7 @@ WELCOME_STRINGS = {
         "page": ("página", "páginas"),
         "stuck": ("lacuna que não fecha", "lacunas que não fecham"),
         "leech": ("leech", "leeches"),
+        "supervision": "{n} aguardando supervisão",
     },
     "en": {
         "interrupted": "Recall: interrupted session! Run a Recall command to recover it.",
@@ -2228,6 +2287,7 @@ WELCOME_STRINGS = {
         "page": ("page", "pages"),
         "stuck": ("gap that won't close", "gaps that won't close"),
         "leech": ("leech", "leeches"),
+        "supervision": "{n} waiting for supervision",
     },
 }
 WELCOME_MAX_TITLES = 3
@@ -2258,7 +2318,14 @@ def welcome_inbox(v: Vault, words: dict):
     rest = len(blocks) - len(titles)
     if rest:
         titles.append(f"+{rest}")
-    return words["inbox"].format(blocks=welcome_count(words, len(blocks), "block"), titles=", ".join(titles))
+    text = words["inbox"].format(blocks=welcome_count(words, len(blocks), "block"), titles=", ".join(titles))
+    try:
+        ids = {b.id for b in blocks}
+        waiting = sum(1 for block_id, e in load_supervision(v).items()
+                      if block_id in ids and (e.get("source") or v.inbox_rel) == v.inbox_rel)
+    except Exception:  # the parked blocks are extra: never lose the inbox line over them
+        waiting = 0
+    return f"{text} ({words['supervision'].format(n=waiting)})" if waiting else text
 
 
 def welcome_maintenance(v: Vault, state: dict, words: dict):
@@ -2335,15 +2402,22 @@ def welcome_message(v: Vault) -> str:
     return "\n".join(lines)
 
 
-def hook_folder() -> str:
-    """The folder a hook runs for: cwd from its stdin JSON, then the project dir, then here."""
-    cwd = None
+def read_hook_json() -> dict:
+    """The JSON a hook receives on stdin; empty when there is none or it is not an object."""
     try:
         if not sys.stdin.isatty():
-            cwd = json.loads(sys.stdin.buffer.read().decode("utf-8")).get("cwd")
-    except (ValueError, AttributeError):
+            data = json.loads(sys.stdin.buffer.read().decode("utf-8"))
+            return data if isinstance(data, dict) else {}
+    except (ValueError, AttributeError, OSError):
         pass
-    return cwd or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    return {}
+
+
+def hook_folder(data=None) -> str:
+    """The folder a hook runs for: cwd from its stdin JSON, then the project dir, then here."""
+    if data is None:
+        data = read_hook_json()
+    return data.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
 
 
 def cmd_welcome(args):
@@ -2354,6 +2428,583 @@ def cmd_welcome(args):
         print(json.dumps({"systemMessage": "\n" + welcome_message(open_vault(args))}))
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Agent review (integrate_review: agent)
+# ---------------------------------------------------------------------------
+# The user approves the plan; after that each block is written, checked here, judged
+# by read-only agents and committed without a diff to approve. A block that doesn't
+# pass is parked for the user. State lives in .srs/review/ and is never committed.
+
+
+class VerdictError(ValueError):
+    """A judge's verdict that doesn't follow the format; the message tells the judge what to fix."""
+
+
+def review_dir(v: Vault) -> Path:
+    return v.srs / REVIEW_DIR
+
+
+def ensure_review_dir(v: Vault) -> Path:
+    path = review_dir(v)
+    path.mkdir(parents=True, exist_ok=True)
+    ignore = path / ".gitignore"  # keeps the folder out of git in vaults whose .gitignore predates it
+    if not ignore.exists():
+        ignore.write_text("*\n", encoding="utf-8")
+    return path
+
+
+def block_review_dir(v: Vault, block_id: str) -> Path:
+    if not BLOCK_ID_RE.fullmatch(block_id):
+        raise SrsError(f"'{block_id}' is not a block id.")
+    return review_dir(v) / block_id
+
+
+def clean_review(v: Vault) -> None:
+    """Forget the plan and the per-block files; what waits for the user's supervision stays."""
+    path = review_dir(v)
+    if not path.is_dir():
+        return
+    for child in path.iterdir():
+        if child.is_dir():
+            shutil.rmtree(str(child), ignore_errors=True)
+        elif child.name == "plan.md":
+            child.unlink()
+
+
+def source_blocks(v: Vault, file_arg):
+    rel, path = block_source(v, file_arg)
+    if not path.exists():
+        raise SrsError(f"{rel} does not exist.")
+    blocks, _ = parse_blocks(read_text(path), v.config["inbox_heading_level"])
+    return rel, blocks
+
+
+def find_block(v: Vault, block_id: str, file_arg):
+    rel, blocks = source_blocks(v, file_arg)
+    for b in blocks:
+        if b.id == block_id:
+            return rel, b
+    raise SrsError(f"No block with id {block_id} in {rel} (it changed or was already removed).", 2)
+
+
+# -- Blocks waiting for the user ---------------------------------------------
+
+
+def supervision_path(v: Vault) -> Path:
+    return review_dir(v) / "supervision.json"
+
+
+def load_supervision(v: Vault) -> dict:
+    return read_json(supervision_path(v), {})
+
+
+def save_supervision(v: Vault, data: dict) -> None:
+    if data:
+        ensure_review_dir(v)
+        write_json(supervision_path(v), data)
+    elif supervision_path(v).exists():
+        supervision_path(v).unlink()
+
+
+def live_supervision(v: Vault) -> dict:
+    """The parked blocks that are still in their source file (the others were integrated or edited)."""
+    found, ids = {}, {}
+    for block_id, entry in load_supervision(v).items():
+        source = entry.get("source") or v.inbox_rel
+        if source not in ids:
+            try:
+                ids[source] = {b.id for b in source_blocks(v, source)[1]}
+            except SrsError:
+                ids[source] = set()
+        if block_id in ids[source]:
+            found[block_id] = entry
+    return found
+
+
+def prune_supervision(v: Vault) -> None:
+    current = load_supervision(v)
+    live = live_supervision(v)
+    if live != current:
+        save_supervision(v, live)
+
+
+def forget_supervision(v: Vault, ids: list) -> None:
+    current = load_supervision(v)
+    if any(i in current for i in ids):
+        save_supervision(v, {k: e for k, e in current.items() if k not in ids})
+
+
+# -- What the diff did -------------------------------------------------------
+
+
+def split_lines(text: str) -> list:
+    lines = text.replace("\r\n", "\n").split("\n")
+    return lines[:-1] if lines and lines[-1] == "" else lines
+
+
+def file_changes(v: Vault, repo: Repo, rel: str, status: str) -> tuple:
+    """(added lines, removed lines) of one changed file against HEAD."""
+    path = v.root / rel
+    if status == "??" or not repo.in_head(rel):
+        return (split_lines(read_text(path)) if path.exists() else []), []
+    out = git(["diff", "HEAD", "-U0", "--no-color", "--", rel], v.root).stdout
+    added, removed, in_hunk = [], [], False
+    for raw in out.split("\n"):
+        raw = raw.rstrip("\r")
+        if raw.startswith("@@"):
+            in_hunk = True
+        elif in_hunk and raw.startswith("+"):
+            added.append(raw[1:])
+        elif in_hunk and raw.startswith("-"):
+            removed.append(raw[1:])
+    return added, removed
+
+
+def new_index_concepts(v: Vault) -> list:
+    """Concepts of the index that HEAD's index doesn't have."""
+    idx, _ = load_index(v)
+    head = git(["show", f"HEAD:./{v.index_rel}"], v.root, check=False)
+    old = {norm_key(c.name) for c in parse_index(head.stdout).concepts()} if head.returncode == 0 else set()
+    return [c.name for c in idx.concepts() if norm_key(c.name) not in old]
+
+
+def review_facts(v: Vault, repo: Repo, session: dict, source_rel: str) -> dict:
+    """What the session changed, ready for the judges. The source file (the inbox) is left out."""
+    changed = repo.status()
+    paths = [p for p in session.get("touched", [])
+             if p in changed and not p.startswith(SRS_DIR + "/") and p != source_rel]
+    files = {p: file_changes(v, repo, p, changed[p]) for p in paths}
+    added_all = {line.strip() for added, _ in files.values() for line in added if line.strip()}
+    moved, rewritten, index_removed = [], [], []
+    for p, (_, removed) in files.items():
+        for line in removed:
+            if not line.strip():
+                continue
+            if line.strip() in added_all:
+                moved.append((p, line))
+            elif p == v.index_rel:
+                index_removed.append(line)
+            else:
+                rewritten.append((p, line))
+    moved_text = {line.strip() for _, line in moved}
+    headings = [(p, line.strip()) for p, (added, _) in files.items() if p != v.index_rel
+                for line in added if HEADING_RE.match(line) and line.strip() not in moved_text]
+    concepts = new_index_concepts(v) if v.index_rel in files else []
+    digest = hashlib.sha1(json.dumps(sorted(files.items()), ensure_ascii=False).encode("utf-8")).hexdigest()
+    return {"status": changed, "files": files, "moved": moved, "rewritten": rewritten,
+            "index_removed": index_removed, "headings": headings, "concepts": concepts, "digest": digest}
+
+
+def page_headings(path: Path) -> set:
+    found, fence = set(), FenceTracker()
+    for raw in split_lines(read_text(path)):
+        if fence.step(raw):
+            continue
+        m = re.match(r"^#{1,6}[ \t]+(.*?)[ \t#]*$", raw)
+        if m:
+            found.add(norm_key(m.group(1)))
+    return found
+
+
+def review_problems(v: Vault, facts: dict, plan: str) -> list:
+    """The checks the script runs itself; any problem sends the block back to the writer."""
+    problems = []
+    files, changed = facts["files"], facts["status"]
+    if v.index_rel in files:
+        problems += [line.strip() for line in index_warnings(v, changed[v.index_rel] == "??")[1:]]
+    moved_text = {line.strip() for _, line in facts["moved"]}
+    tables, headings = link_tables(v), {}
+    for p, (added, _) in files.items():
+        if p == v.index_rel:
+            continue
+        for line in added:
+            if line.strip() in moved_text:
+                continue
+            for m in WIKILINK_RE.finditer(line):
+                target, _, heading = m.group(1).split("|", 1)[0].partition("#")
+                target, heading = target.strip(), heading.strip()
+                if target.rsplit(".", 1)[-1].lower() in ATTACHMENT_EXTS and "." in target:
+                    continue
+                cands = [p] if not target else link_candidates(tables, target)
+                if len(cands) != 1:
+                    problems.append(f"{p}: [[{m.group(1)}]] {'is ambiguous' if cands else 'does not resolve'}")
+                    continue
+                last = heading.split("#")[-1].strip()
+                if last and not last.startswith("^"):
+                    if cands[0] not in headings:
+                        headings[cands[0]] = page_headings(v.root / cands[0])
+                    if norm_key(last) not in headings[cands[0]]:
+                        problems.append(f"{p}: [[{m.group(1)}]] points to a heading that {cands[0]} doesn't have")
+    plan_text = plan.casefold()
+    rewritten = defaultdict(int)
+    for p, _ in facts["rewritten"]:
+        rewritten[p] += 1
+    for p, n in sorted(rewritten.items()):
+        if Path(p).stem.casefold() not in plan_text:
+            problems.append(f"{p}: {plural(n, 'existing line')} rewritten or removed, but the approved plan "
+                            "doesn't name that page (the plan must say 'move' or 'rewrite')")
+    return problems
+
+
+def judges_for(facts: dict) -> list:
+    """The concept judge is needed only when the diff gives a page a new heading or the index a new concept."""
+    return ["diff-judge"] + (["concept-judge"] if facts["headings"] or facts["concepts"] else [])
+
+
+def listing(items: list, fmt) -> str:
+    return "\n".join(f"- {fmt(item)}" for item in items) if items else "(none)"
+
+
+def write_review_input(v: Vault, repo: Repo, block: Block, plan: str, facts: dict) -> Path:
+    paths = list(facts["files"])
+    diff = render_diff(v, repo, facts["status"], paths, warnings=False) if paths else "(no changes)"
+    map_path = v.root / v.folder_map_rel
+    text = "\n".join([
+        f"# Review input: block {block.id} ({block.title})",
+        f"Block id: {block.id}",
+        f"Vault: {v.root.as_posix()}",
+        f"Index: {(v.root / v.index_rel).as_posix()}",
+        f"Folder map: {map_path.as_posix() if map_path.is_file() else 'none'}",
+        "Pages are vault-relative below; open one by joining it to the vault path above.",
+        "",
+        "## Block text (from the inbox)",
+        "----- begin block text -----",
+        block.text.rstrip("\n"),
+        "----- end block text -----",
+        "",
+        "## Approved plan",
+        "----- begin plan -----",
+        plan.rstrip("\n"),
+        "----- end plan -----",
+        "",
+        "## Derived from the diff",
+        "Moved lines (removed from one place and added unchanged elsewhere):",
+        listing(facts["moved"], lambda x: f"{x[0]}: {x[1].strip()}"),
+        "",
+        "Existing lines rewritten or removed:",
+        listing(facts["rewritten"], lambda x: f"{x[0]}: {x[1].strip()}"),
+        "",
+        "Index lines changed or removed:",
+        listing(facts["index_removed"], lambda x: x.strip()),
+        "",
+        "New headings:",
+        listing(facts["headings"], lambda x: f"{x[0]}: {x[1]}"),
+        "",
+        "New concepts in the index:",
+        listing(facts["concepts"], lambda x: x),
+        "",
+        "## Diff",
+        "----- begin diff -----",
+        diff,
+        "----- end diff -----",
+        "",
+    ])
+    path = block_review_dir(v, block.id) / "input.md"
+    write_text(path, text)
+    return path
+
+
+def load_meta(v: Vault, block_id: str) -> dict:
+    meta = read_json(block_review_dir(v, block_id) / "meta.json", None)
+    if not meta:
+        raise SrsError(f"Block {block_id} has no review in progress: run srs.py review prepare {block_id}.", 2)
+    return meta
+
+
+def report_checks(problems: list) -> list:
+    if not problems:
+        return ["Checks: ok"]
+    return ["Checks: FAIL"] + [f"  - {p}" for p in problems]
+
+
+# -- The judges' verdict -----------------------------------------------------
+
+
+def parse_verdict(text: str) -> dict:
+    """Check a judge's answer against the format; returns block, judge, verdict and the result of each letter."""
+    lines = [line.strip() for line in text.strip().splitlines()]
+    if lines and lines[0].startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].startswith("```"):
+        lines = lines[:-1]
+    lines = [line for line in lines if line]
+    if len(lines) < 4:
+        raise VerdictError("it needs the lines BLOCK, JUDGE, VERDICT and one line per criterion")
+    m = re.fullmatch(r"BLOCK (%s)" % BLOCK_ID_RE.pattern, lines[0])
+    if not m:
+        raise VerdictError("the first line must be 'BLOCK <id>'")
+    block_id = m.group(1)
+    m = re.fullmatch(r"JUDGE (%s)" % "|".join(JUDGES), lines[1])
+    if not m:
+        raise VerdictError("the second line must be 'JUDGE diff-judge' or 'JUDGE concept-judge'")
+    judge = m.group(1)
+    m = re.fullmatch(r"VERDICT (PASS|REVISE)", lines[2])
+    if not m:
+        raise VerdictError("the third line must be 'VERDICT PASS' or 'VERDICT REVISE'")
+    verdict = m.group(1)
+    letters = JUDGES[judge]
+    results = {}
+    for line in lines[3:]:
+        m = re.fullmatch(r"([A-Z]) PASS", line)
+        if m:
+            letter, status, detail = m.group(1), "PASS", None
+        else:
+            m = re.fullmatch(r"([A-Z]) FAIL\s*[—–-]+\s*(\S.*)", line)
+            if not m:
+                raise VerdictError(f"'{line}' is not '<letter> PASS' or '<letter> FAIL — <path>: \"<line>\" — <problem>'")
+            letter, status, detail = m.group(1), "FAIL", m.group(2)
+        if letter not in letters:
+            raise VerdictError(f"{judge} answers the criteria {', '.join(letters)}, not {letter}")
+        if letter in results and (status == "PASS" or results[letter][0] == "PASS"):
+            raise VerdictError(f"criterion {letter} appears twice, as PASS and as another line")
+        results.setdefault(letter, (status, []))[1].append(detail)
+    missing = [c for c in letters if c not in results]
+    if missing:
+        raise VerdictError(f"criterion {', '.join(missing)} is missing")
+    failed = [c for c, (status, _) in results.items() if status == "FAIL"]
+    if bool(failed) != (verdict == "REVISE"):
+        raise VerdictError("VERDICT must be REVISE exactly when some criterion has a FAIL line")
+    return {"block": block_id, "judge": judge, "verdict": verdict, "failed": sorted(failed), "results": results}
+
+
+def stored_verdict(v: Vault, block_id: str, judge: str):
+    """The parsed verdict captured for a judge, or None when there is none (or it no longer parses)."""
+    data = read_json(block_review_dir(v, block_id) / f"{judge}.json", None)
+    if not isinstance(data, dict) or not isinstance(data.get("text"), str):
+        return None
+    try:
+        parsed = parse_verdict(data["text"])
+    except VerdictError:
+        return None
+    return parsed if parsed["block"] == block_id and parsed["judge"] == judge else None
+
+
+def capture_verdict(args) -> None:
+    data = read_hook_json()
+    args.vault = args.vault or hook_folder(data)
+    v = open_vault(args)
+    session = load_session(v)
+    if not session or session.get("command") != "integrate":
+        return
+    event = data.get("hook_event_name")
+    if os.environ.get("RECALL_HOOK_LOG") == "1":
+        ensure_review_dir(v)
+        with (review_dir(v) / "hook-log.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(data, ensure_ascii=False) + "\n")
+    agent_type = data.get("agent_type") or ""
+    judge = agent_type[len(JUDGE_PLUGIN) + 1:] if agent_type.startswith(JUDGE_PLUGIN + ":") else None
+    if judge not in JUDGES:
+        return
+    agent_id = data.get("agent_id")
+    if event == "SubagentStop":
+        if agent_id:  # the report already came through the handback tool
+            for path in review_dir(v).glob("*/*.json"):
+                try:
+                    if json.loads(path.read_text(encoding="utf-8")).get("agent_id") == agent_id:
+                        return
+                except (OSError, ValueError, AttributeError):
+                    continue
+        text = data.get("last_assistant_message")
+    elif event == "PreToolUse" and data.get("tool_name") == "SubagentHandback":
+        text = (data.get("tool_input") or {}).get("message")
+    else:
+        return
+    try:
+        if not isinstance(text, str):
+            raise VerdictError("there is no report text")
+        parsed = parse_verdict(text)
+        if parsed["judge"] != judge:
+            raise VerdictError(f"you are {judge}, but the verdict says JUDGE {parsed['judge']}")
+        meta = read_json(block_review_dir(v, parsed["block"]) / "meta.json", None)
+        if not meta or judge not in meta.get("judges", []):
+            raise VerdictError(f"block {parsed['block']} was not sent to {judge} for review")
+    except VerdictError as exc:
+        reason = (f"Invalid verdict: {exc}. Reply again with only the verdict, in exactly the format of your instructions.")
+        if event == "PreToolUse":
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                                     "permissionDecisionReason": reason}}))
+        elif not data.get("stop_hook_active"):
+            print(json.dumps({"decision": "block", "reason": reason}))
+        return
+    write_json(block_review_dir(v, parsed["block"]) / f"{judge}.json", {"agent_id": agent_id, "text": text})
+
+
+def cmd_capture_verdict(args):
+    """PreToolUse (SubagentHandback) and SubagentStop hook. Whatever goes wrong must not reach the session."""
+    try:
+        capture_verdict(args)
+    except Exception:
+        pass
+
+
+# -- Commands ----------------------------------------------------------------
+
+
+def cmd_plan(args):
+    v = open_vault(args)
+    require_session(v)
+    lines = [line.strip() for line in args.lines if line.strip()]
+    if not lines:
+        raise SrsError("Give the plan, one line per argument.")
+    ensure_review_dir(v)
+    write_text(review_dir(v) / "plan.md", "\n".join(lines) + "\n")
+    print(f"Plan saved ({plural(len(lines), 'line')}):")
+    print("\n".join(lines))
+
+
+def review_context(v: Vault, block_id: str, file_arg):
+    repo = require_repo(v)
+    session = require_session(v)
+    rel, block = find_block(v, block_id, file_arg)
+    plan_path = review_dir(v) / "plan.md"
+    if not plan_path.is_file():
+        raise SrsError("No plan saved: run srs.py plan save with the approved plan first.", 2)
+    plan = read_text(plan_path)
+    facts = review_facts(v, repo, session, rel)
+    return repo, rel, block, plan, facts, review_problems(v, facts, plan)
+
+
+def review_prepare(v: Vault, args):
+    repo, rel, block, plan, facts, problems = review_context(v, args.id, args.file)
+    folder = block_review_dir(v, block.id)
+    ensure_review_dir(v)
+    shutil.rmtree(str(folder), ignore_errors=True)
+    folder.mkdir(parents=True)
+    judges = judges_for(facts)
+    path = write_review_input(v, repo, block, plan, facts)
+    write_json(folder / "meta.json", {"title": block.title, "source": rel, "judges": judges, "digest": facts["digest"],
+                                      "checks": "ok" if not problems else "fail", "prepared": now_iso()})
+    print("\n".join(report_checks(problems)))
+    if not problems:
+        print(f"Judges: {', '.join(f'{JUDGE_PLUGIN}:{j}' for j in judges)}")
+        print(f"Input: {path.as_posix()}")
+
+
+def review_verdict(v: Vault, args):
+    meta = load_meta(v, args.id)
+    verdicts, missing = {}, []
+    for judge in meta["judges"]:
+        parsed = stored_verdict(v, args.id, judge)
+        if parsed is None:
+            missing.append(judge)
+            continue
+        verdicts[judge] = parsed["verdict"]
+        data = read_json(block_review_dir(v, args.id) / f"{judge}.json", {})
+        print(f"## {judge}")
+        print(data["text"].strip())
+        print()
+    if missing:
+        print(f"Review: MISSING {', '.join(missing)}")
+    else:
+        print("Review: " + ("REVISE" if "REVISE" in verdicts.values() else "PASS"))
+
+
+def review_final(v: Vault, args):
+    meta = load_meta(v, args.id)
+    folder = block_review_dir(v, args.id)
+    if not args.note or not args.note.strip():
+        raise SrsError("Give --note: one line on what changed, or why you disagree with the judge.")
+    if (folder / "note.txt").exists():
+        raise SrsError("The block was already revised once: park it (srs.py review park).", 2)
+    verdicts = {j: stored_verdict(v, args.id, j) for j in meta["judges"]}
+    if not all(verdicts.values()):
+        raise SrsError("A judge's verdict is missing: park the block (srs.py review park).", 2)
+    if not any(p["verdict"] == "REVISE" for p in verdicts.values()):
+        raise SrsError("Every judge passed the block: there is nothing to revise. Commit it as it is.", 2)
+    repo, rel, block, plan, facts, problems = review_context(v, args.id, args.file or meta["source"])
+    for judge in judges_for(facts):
+        if judge not in meta["judges"]:
+            problems.append(f"the revision now needs {judge}, which did not review this block")
+    write_text(folder / "note.txt", args.note.strip() + "\n")
+    write_review_input(v, repo, block, plan, facts)
+    meta.update({"digest": facts["digest"], "checks": "ok" if not problems else "fail"})
+    write_json(folder / "meta.json", meta)
+    print("\n".join(report_checks(problems)))
+
+
+def review_commit_body(v: Vault, repo: Repo, session: dict, block_id: str) -> str:
+    """The lines a reviewed commit adds to its message; refuses unless the review is complete and current."""
+    meta = load_meta(v, block_id)
+    folder = block_review_dir(v, block_id)
+    if meta.get("checks") != "ok":
+        raise SrsError(f"The checks of block {block_id} failed: park it (srs.py review park).", 2)
+    verdicts = {j: stored_verdict(v, block_id, j) for j in meta["judges"]}
+    if not all(verdicts.values()):
+        raise SrsError(f"A judge's verdict for block {block_id} is missing: park it (srs.py review park).", 2)
+    revised = any(p["verdict"] == "REVISE" for p in verdicts.values())
+    if revised and not (folder / "note.txt").exists():
+        raise SrsError(f"A judge asked for changes to block {block_id}: revise it, then run srs.py review final.", 2)
+    if review_facts(v, repo, session, meta["source"])["digest"] != meta["digest"]:
+        raise SrsError(f"The pages changed after the last review step of block {block_id}: run srs.py review "
+                       "prepare again to have the judges see them, or park the block.", 2)
+    note = (folder / "note.txt").read_text(encoding="utf-8").strip() if (folder / "note.txt").exists() else ""
+    lines = ["Reviewed by agents."]
+    for judge, parsed in verdicts.items():
+        line = f"{judge}: {parsed['verdict']}"
+        if parsed["verdict"] == "REVISE":
+            line += f" ({', '.join(parsed['failed'])}) — writer: {note}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def git_bytes(args: list, cwd: Path) -> bytes:
+    proc = subprocess.run(["git"] + list(args), cwd=str(cwd), capture_output=True)
+    if proc.returncode != 0:
+        raise SrsError(f"git {' '.join(args)} failed: {proc.stderr.decode('utf-8', 'replace').strip()}")
+    return proc.stdout
+
+
+def review_park(v: Vault, args):
+    repo = require_repo(v)
+    session = require_session(v)
+    if not args.reason or not args.reason.strip():
+        raise SrsError("Give --reason: one line on why the block needs the user.")
+    rel, block = find_block(v, args.id, args.file)
+    files, has_patch = [], False
+    ensure_review_dir(v)
+    folder = block_review_dir(v, block.id)
+    folder.mkdir(parents=True, exist_ok=True)
+    if not args.waiting:
+        changed = repo.status()
+        files = [p for p in session.get("touched", [])
+                 if p in changed and not p.startswith(SRS_DIR + "/") and p != rel]
+        if files:
+            new = [p for p in files if changed[p] == "??"]
+            if new:
+                git(["add", "-N", "--"] + new, v.root)  # so the patch includes files that are not tracked yet
+            (folder / "proposal.patch").write_bytes(git_bytes(["diff", "HEAD", "--binary", "--"] + files, v.root))
+            has_patch = True
+        discard_touched(v, repo, session, include_state=False)
+        save_session(v, session)
+    entry = {"title": block.title, "source": rel, "reason": args.reason.strip(), "day": v.today.isoformat(),
+             "waiting": bool(args.waiting), "files": files, "patch": has_patch}
+    save_supervision(v, {**load_supervision(v), block.id: entry})
+    print(f"Parked block {block.id} ({block.title}) for the user's supervision: {entry['reason']}")
+
+
+def review_restore(v: Vault, args):
+    repo = require_repo(v)
+    require_session(v)
+    entry = load_supervision(v).get(args.id)
+    if entry is None:
+        raise SrsError(f"Block {args.id} is not waiting for supervision.", 2)
+    patch = block_review_dir(v, args.id) / "proposal.patch"
+    if not entry.get("patch") or not patch.is_file():
+        raise SrsError(f"No saved proposal for block {args.id}: write the block again.", 2)
+    if git(["apply", "--check", str(patch)], v.root, check=False).returncode != 0:
+        raise SrsError("Patch no longer applies: redo the block.", 2)
+    git(["apply", str(patch)], v.root)
+    for rel in entry.get("files", []):
+        touch(v, rel)
+    print(f"Restored the saved proposal for block {args.id}: {', '.join(entry.get('files', []))}")
+
+
+def cmd_review(args):
+    v = open_vault(args)
+    {"prepare": review_prepare, "verdict": review_verdict, "final": review_final,
+     "park": review_park, "restore": review_restore}[args.action](v, args)
 
 
 # ---------------------------------------------------------------------------
@@ -2591,6 +3242,7 @@ def context_integrate(v: Vault, extra: list) -> list:
     out = context_header(v, "integrate")
     out += session_lines(v)
     out.append(queue_summary(state, v))
+    out.append(f"Review mode: {v.integrate_review}")
     rel, path = block_source(v, source)
     out.append("")
     if not path.exists():
@@ -2605,6 +3257,12 @@ def context_integrate(v: Vault, extra: list) -> list:
         if not blocks:
             level = v.config["inbox_heading_level"]
             out.append(f"  (no blocks: a block starts with a heading of level {level}, '{'#' * level} Title')")
+        waiting = {b: e for b, e in live_supervision(v).items() if (e.get("source") or v.inbox_rel) == rel}
+        if waiting:
+            out.append("")
+            out.append("## Blocks waiting for supervision (an earlier agent-review round parked them; they are still in the source)")
+            for block_id, e in waiting.items():
+                out.append(f"  [{block_id}] {e.get('title', '')} — {e.get('reason', '')} (parked {e.get('day', '?')})")
     out.append("")
     out.append(f"## Index ({v.index_rel}) — markers: [review] in review, [queued] waiting; unmarked = index only")
     out += annotated_index(text, idx, state) if text.strip() else ["(empty)"]
@@ -2724,6 +3382,7 @@ def context_config(v: Vault) -> list:
     out.append("")
     out.append("## Current pace")
     out += pace_lines(v)
+    out.append(review_mode_line(v))
     out.append("")
     out.append("## Rules")
     out.append(rules_text())
@@ -2824,6 +3483,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("diff", help="show the session's uncommitted changes").set_defaults(func=cmd_diff)
     p = sub.add_parser("commit", help="commit what the session touched")
     p.add_argument("-m", "--message", required=True)
+    p.add_argument("--review", metavar="ID", help="commit a block that the agent review cleared (adds its verdicts to the message)")
     p.set_defaults(func=cmd_commit)
     sub.add_parser("discard", help="undo the session's uncommitted note edits").set_defaults(func=cmd_discard)
     sub.add_parser("end", help="close the session").set_defaults(func=cmd_end)
@@ -2876,6 +3536,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("config", help="show or change the daily pace (commits the change itself)")
     p.add_argument("--new-per-day", type=int, help="new concepts per day (0 pauses them)")
     p.add_argument("--daily-limit", type=int, help="concepts per day, reviews and new together")
+    p.add_argument("--integrate-review", choices=REVIEW_MODES, help="who reviews /integrate: you (human) or judge agents (agent)")
     p.set_defaults(func=cmd_config)
 
     sub.add_parser("check", help="deterministic maintenance checks").set_defaults(func=cmd_check)
@@ -2894,6 +3555,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_inbox)
     sub.add_parser("setup-batch", help="the next pages to index").set_defaults(func=cmd_setup_batch)
     sub.add_parser("welcome", help="session-start status as hook JSON (read-only)").set_defaults(func=cmd_welcome)
+    p = sub.add_parser("plan", help="save the approved /integrate plan for the agent review")
+    p.add_argument("action", choices=["save"])
+    p.add_argument("lines", nargs="+")
+    p.set_defaults(func=cmd_plan)
+    p = sub.add_parser("review", help="agent review of one block: prepare, verdict, final, park, restore")
+    p.add_argument("action", choices=["prepare", "verdict", "final", "park", "restore"])
+    p.add_argument("id")
+    p.add_argument("--file", help="the file the block comes from, when it is not the inbox")
+    p.add_argument("--note", help="final: one line on what the writer changed, or why it disagrees")
+    p.add_argument("--reason", help="park: one line on why the block needs the user")
+    p.add_argument("--waiting", action="store_true", help="park: the block was not written, it waits for another")
+    p.set_defaults(func=cmd_review)
+    sub.add_parser("capture-verdict", help="hook: save a judge agent's verdict").set_defaults(func=cmd_capture_verdict)
     return parser
 
 

@@ -7,6 +7,7 @@ import datetime as dt
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -2233,6 +2234,539 @@ class QuizAsksItselfTest(unittest.TestCase):
             self.assertNotIn("question-drafter", text, name)
             self.assertNotIn("in the background", text, name)
         self.assertIn("index-drafter and page-auditor (Haiku, read-only)", (ROOT / "README.md").read_text())
+
+
+class VerdictParserTest(unittest.TestCase):
+    ID = "0a1b2c3d"
+
+    def diff_verdict(self, *lines):
+        return "\n".join([f"BLOCK {self.ID}", "JUDGE diff-judge", *lines])
+
+    def test_valid_verdicts(self):
+        text = self.diff_verdict("VERDICT PASS", "V PASS", "P PASS", "E PASS", "R PASS")
+        parsed = srs.parse_verdict(text)
+        self.assertEqual((parsed["block"], parsed["judge"], parsed["verdict"]), (self.ID, "diff-judge", "PASS"))
+        fenced = "```text\n" + self.diff_verdict("VERDICT REVISE", "V PASS", "P FAIL — a.md: \"x\" — wrong place",
+                                                 "P FAIL — b.md: \"y\" — also", "E PASS", "R PASS") + "\n```"
+        parsed = srs.parse_verdict(fenced)
+        self.assertEqual((parsed["verdict"], parsed["failed"]), ("REVISE", ["P"]))
+        concept = f"BLOCK {self.ID}-2\nJUDGE concept-judge\nVERDICT PASS\nO PASS\nD PASS\nI PASS"
+        self.assertEqual(srs.parse_verdict(concept)["block"], self.ID + "-2")
+
+    def test_invalid_verdicts(self):
+        ok = ["V PASS", "P PASS", "E PASS", "R PASS"]
+        bad = {
+            "a letter is missing": self.diff_verdict("VERDICT PASS", *ok[:3]),
+            "a letter of the other judge": self.diff_verdict("VERDICT PASS", *ok, "O PASS"),
+            "a letter twice": self.diff_verdict("VERDICT PASS", *ok, "V PASS"),
+            "pass and fail for one letter": self.diff_verdict("VERDICT REVISE", *ok, "V FAIL — a.md: \"x\" — no"),
+            "pass verdict with a fail": self.diff_verdict("VERDICT PASS", "V FAIL — a.md: \"x\" — no", *ok[1:]),
+            "revise verdict without a fail": self.diff_verdict("VERDICT REVISE", *ok),
+            "extra text": self.diff_verdict("VERDICT PASS", *ok) + "\nLooks good to me!",
+            "text before": "Here is my verdict:\n" + self.diff_verdict("VERDICT PASS", *ok),
+            "wrong verdict word": self.diff_verdict("VERDICT OK", *ok),
+            "unknown judge": f"BLOCK {self.ID}\nJUDGE other-judge\nVERDICT PASS\nV PASS\nP PASS\nE PASS\nR PASS",
+            "bad block id": "BLOCK ../etc\nJUDGE diff-judge\nVERDICT PASS\n" + "\n".join(ok),
+            "a fail without a reason": self.diff_verdict("VERDICT REVISE", "V FAIL", *ok[1:]),
+            "empty": "",
+        }
+        for name, text in bad.items():
+            with self.subTest(name):
+                with self.assertRaises(srs.VerdictError):
+                    srs.parse_verdict(text)
+
+
+class AgentReviewTest(VaultCase):
+    """integrate_review: agent. The commands the skill calls around each block."""
+
+    EIGEN = "# Eigen\nAv = λv defines eigenvectors.\n"
+
+    def setUp(self):
+        super().setUp()
+        self.index("## [[Eigendecomposition]]\n- Eigenvectors\n\n## [[Bayes]]\n- Bayes' theorem\n")
+        self.srs("begin", "integrate")  # also commits the index written above as a manual edit
+        self.first = self.block_id("First")
+        self.second = self.block_id("Second")
+
+    def block_id(self, title):
+        for line in self.srs("inbox", "list").stdout.splitlines():
+            m = re.match(r"\s*\[([0-9a-f]{8}(?:-\d+)?)\] (.*) \(\d+ characters\)$", line)
+            if m and m.group(2) == title:
+                return m.group(1)
+        self.fail(f"no block {title}")
+
+    def plan(self, *lines):
+        return self.srs("plan", "save", *lines).stdout
+
+    def prepare(self, block_id=None, check=True):
+        return self.srs("review", "prepare", block_id or self.first, check=check)
+
+    def hook(self, payload, vault=None):
+        proc = subprocess.run([sys.executable, str(SRS), "capture-verdict"], input=json.dumps(payload),
+                              cwd=str(vault or self.vault), env=self.env, capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return proc.stdout.strip()
+
+    def verdict_text(self, judge, verdict="PASS", block_id=None, failures=None):
+        failures = failures or {}
+        letters = srs.JUDGES[judge]
+        lines = [f"BLOCK {block_id or self.first}", f"JUDGE {judge}", f"VERDICT {verdict}"]
+        for letter in letters:
+            lines.append(f"{letter} FAIL — {failures[letter]}" if letter in failures else f"{letter} PASS")
+        return "\n".join(lines)
+
+    def judge(self, judge, verdict="PASS", block_id=None, via="stop", agent_id="agent-1", **kw):
+        text = self.verdict_text(judge, verdict, block_id, **kw)
+        if via == "handback":
+            payload = {"hook_event_name": "PreToolUse", "tool_name": "SubagentHandback", "agent_type": f"recall:{judge}",
+                       "agent_id": agent_id, "tool_input": {"message": text}, "cwd": str(self.vault)}
+        else:
+            payload = {"hook_event_name": "SubagentStop", "agent_type": f"recall:{judge}", "agent_id": agent_id,
+                       "last_assistant_message": text, "stop_hook_active": False, "cwd": str(self.vault)}
+        return self.hook(payload)
+
+    def verdict_line(self, block_id=None):
+        return self.srs("review", "verdict", block_id or self.first).stdout.strip().splitlines()[-1]
+
+    def review_files(self, block_id=None):
+        return sorted(p.name for p in (self.vault / ".srs/review" / (block_id or self.first)).iterdir())
+
+    def test_plan_save_prints_what_it_saved(self):
+        out = self.plan("1. Eigen: First (id)", "2. Bayes: Second (id)")
+        self.assertIn("Plan saved (2 lines)", out)
+        self.assertEqual((self.vault / ".srs/review/plan.md").read_text(), "1. Eigen: First (id)\n2. Bayes: Second (id)\n")
+        self.assertEqual(self.srs("plan", "save", " ", check=False).returncode, 1)
+
+    def test_prepare_needs_a_plan_and_a_block(self):
+        proc = self.prepare(check=False)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("No plan saved", proc.stderr)
+        self.plan("1. anything")
+        self.assertEqual(self.prepare("deadbeef", check=False).returncode, 2)
+
+    def test_prepare_writes_the_judges_input(self):
+        self.plan("1. Eigendecomposition: add First after the first paragraph")
+        self.edit_via_hook("Math/Eigendecomposition.md", self.EIGEN + "\none\n")
+        out = self.prepare().stdout
+        self.assertIn("Checks: ok", out)
+        self.assertIn("Judges: recall:diff-judge\n", out)
+        path = Path(out.split("Input: ")[1].strip())
+        self.assertEqual(path, self.vault / ".srs/review" / self.first / "input.md")
+        text = path.read_text()
+        for part in ("## Block text", "## First", "one", "## Approved plan", "add First after the first paragraph",
+                     "+one", "Math/Eigendecomposition.md"):
+            self.assertIn(part, text)
+        self.assertIn(str(self.vault / "index.md"), text)
+
+    def test_moved_and_rewritten_lines_are_told_apart(self):
+        self.plan("1. move the Bayes line to Eigendecomposition; rewrite Eigendecomposition's first line")
+        self.edit_via_hook("Math/Bayes.md", "# Bayes\n")
+        self.edit_via_hook("Math/Eigendecomposition.md", "# Eigen\nAv = λv, reworded.\nP(A|B) = P(B|A)P(A)/P(B)\n")
+        out = self.prepare().stdout
+        self.assertIn("Checks: ok", out)
+        text = (self.vault / ".srs/review" / self.first / "input.md").read_text()
+        moved = text.split("Moved lines")[1].split("Existing lines rewritten")[0]
+        rewritten = text.split("Existing lines rewritten or removed:")[1].split("Index lines changed")[0]
+        self.assertIn("Math/Bayes.md: P(A|B) = P(B|A)P(A)/P(B)", moved)
+        self.assertNotIn("reworded", moved)
+        self.assertIn("Math/Eigendecomposition.md: Av = λv defines eigenvectors.", rewritten)
+        self.assertNotIn("P(A|B)", rewritten)
+
+    def test_rewriting_a_page_the_plan_does_not_name_fails(self):
+        self.plan("1. Bayes: add First")
+        self.edit_via_hook("Math/Eigendecomposition.md", "# Eigen\nreworded\n")
+        out = self.prepare().stdout
+        self.assertIn("Checks: FAIL", out)
+        self.assertIn("Math/Eigendecomposition.md: 1 existing line rewritten or removed", out)
+        self.assertNotIn("Judges:", out)
+        self.plan("1. Bayes: add First", "2. rewrite Eigendecomposition")
+        self.assertIn("Checks: ok", self.prepare().stdout)
+
+    def test_links_must_resolve_and_point_at_real_headings(self):
+        self.plan("1. add First to Eigendecomposition")
+        self.edit_via_hook("Math/Eigendecomposition.md", self.EIGEN + "\n[[Nowhere]] [[Bayes#Missing]] [[Bayes#Bayes]] "
+                           "[[Bayes|alias]] ![[figure.png]] [[#Eigen]] [[#Nope]]\n")
+        out = self.prepare().stdout
+        self.assertIn("[[Nowhere]] does not resolve", out)
+        self.assertIn("[[Bayes#Missing]] points to a heading that Math/Bayes.md doesn't have", out)
+        self.assertIn("[[#Nope]] points to a heading that Math/Eigendecomposition.md doesn't have", out)
+        self.assertEqual(out.count("  - "), 3)
+
+    def test_links_to_pages_created_in_the_session_resolve(self):
+        self.plan("1. new page Fresh")
+        self.edit_via_hook("wiki/Fresh.md", "# Fresh\n## Part\n")
+        self.edit_via_hook("Math/Bayes.md", "# Bayes\nP(A|B) = P(B|A)P(A)/P(B)\nSee [[Fresh#Part]].\n")
+        self.assertIn("Checks: ok", self.prepare().stdout)
+
+    def test_index_warnings_count_as_failures(self):
+        self.plan("1. add First to Eigendecomposition")
+        self.edit_via_hook("index.md", "# Index\n\n## [[Eigendecomposition]]\n- Eigenvectors\n- Bayes' theorem\n\n"
+                           "## [[Bayes]]\n- Bayes' theorem\n")
+        out = self.prepare().stdout
+        self.assertIn("Checks: FAIL", out)
+        self.assertIn("Bayes' theorem", out)
+
+    def test_the_concept_judge_runs_only_for_new_headings_or_concepts(self):
+        self.plan("1. Eigendecomposition: First")
+        self.edit_via_hook("Math/Eigendecomposition.md", self.EIGEN + "plain addition\n")
+        self.assertIn("Judges: recall:diff-judge\n", self.prepare().stdout)
+        self.edit_via_hook("Math/Eigendecomposition.md", self.EIGEN + "plain addition\n\n## Trace\nsum of eigenvalues\n")
+        self.assertIn("Judges: recall:diff-judge, recall:concept-judge", self.prepare().stdout)
+        self.srs("discard")
+        self.edit_via_hook("index.md", "# Index\n\n## [[Eigendecomposition]]\n- Eigenvectors\n- Trace\n\n"
+                           "## [[Bayes]]\n- Bayes' theorem\n")
+        self.assertIn("Judges: recall:diff-judge, recall:concept-judge", self.prepare().stdout)
+        # a changed description is not a new concept
+        self.srs("discard")
+        self.edit_via_hook("index.md", "# Index\n\n## [[Eigendecomposition]]\n- Eigenvectors — vectors\n\n"
+                           "## [[Bayes]]\n- Bayes' theorem\n")
+        self.assertIn("Judges: recall:diff-judge\n", self.prepare().stdout)
+
+    def test_a_moved_heading_is_not_a_new_heading(self):
+        self.write("Math/Eigendecomposition.md", "# Eigen\n## Trace\nsum\n")
+        self.srs("end")
+        self.srs("begin", "integrate")
+        self.plan("1. move Trace from Eigendecomposition to Bayes")
+        self.edit_via_hook("Math/Eigendecomposition.md", "# Eigen\n")
+        self.edit_via_hook("Math/Bayes.md", "# Bayes\nP(A|B) = P(B|A)P(A)/P(B)\n## Trace\nsum\n")
+        self.assertIn("Judges: recall:diff-judge\n", self.prepare().stdout)
+
+    def test_the_hook_saves_a_verdict_from_the_handback_or_the_final_message(self):
+        self.plan("1. First")
+        self.edit_via_hook("Math/Eigendecomposition.md", self.EIGEN + "one\n")
+        self.prepare()
+        self.assertEqual(self.verdict_line(), "Review: MISSING diff-judge")
+        self.assertEqual(self.judge("diff-judge", via="handback"), "")
+        saved = json.loads((self.vault / ".srs/review" / self.first / "diff-judge.json").read_text())
+        self.assertEqual(saved["agent_id"], "agent-1")
+        self.assertEqual(self.verdict_line(), "Review: PASS")
+        self.assertEqual(self.judge("diff-judge", via="stop", agent_id="agent-2", verdict="REVISE",
+                                    failures={"V": 'Math/Eigendecomposition.md: "one" — padding'}), "")
+        self.assertEqual(self.verdict_line(), "Review: REVISE")
+        self.assertIn('V FAIL — Math/Eigendecomposition.md: "one" — padding', self.srs("review", "verdict", self.first).stdout)
+
+    def test_the_stop_event_after_a_handback_changes_nothing(self):
+        self.plan("1. First")
+        self.edit_via_hook("Math/Eigendecomposition.md", self.EIGEN + "one\n")
+        self.prepare()
+        self.judge("diff-judge", via="handback", agent_id="agent-9")
+        payload = {"hook_event_name": "SubagentStop", "agent_type": "recall:diff-judge", "agent_id": "agent-9",
+                   "last_assistant_message": "Done, the verdict is above.", "stop_hook_active": False, "cwd": str(self.vault)}
+        self.assertEqual(self.hook(payload), "")
+        self.assertEqual(self.verdict_line(), "Review: PASS")
+
+    def test_an_invalid_verdict_is_sent_back_to_the_judge(self):
+        self.plan("1. First")
+        self.edit_via_hook("Math/Eigendecomposition.md", self.EIGEN + "one\n")
+        self.prepare()
+        bad = {"hook_event_name": "PreToolUse", "tool_name": "SubagentHandback", "agent_type": "recall:diff-judge",
+               "agent_id": "a1", "tool_input": {"message": "All good!"}, "cwd": str(self.vault)}
+        out = json.loads(self.hook(bad))["hookSpecificOutput"]
+        self.assertEqual(out["permissionDecision"], "deny")
+        self.assertIn("Invalid verdict", out["permissionDecisionReason"])
+        stop = {"hook_event_name": "SubagentStop", "agent_type": "recall:diff-judge", "agent_id": "a1",
+                "last_assistant_message": "All good!", "stop_hook_active": False, "cwd": str(self.vault)}
+        out = json.loads(self.hook(stop))
+        self.assertEqual(out["decision"], "block")
+        self.assertIn("exactly the format", out["reason"])
+        self.assertEqual(self.hook(dict(stop, stop_hook_active=True)), "")  # asked once already: no loop
+        self.assertEqual(self.verdict_line(), "Review: MISSING diff-judge")
+
+    def test_the_hook_ignores_what_is_not_a_judge_report_for_this_block(self):
+        self.plan("1. First")
+        self.edit_via_hook("Math/Eigendecomposition.md", self.EIGEN + "one\n")
+        self.prepare()
+        text = self.verdict_text("diff-judge")
+        base = {"hook_event_name": "SubagentStop", "agent_id": "a1", "last_assistant_message": text,
+                "stop_hook_active": False, "cwd": str(self.vault)}
+        self.assertEqual(self.hook(dict(base, agent_type="recall:page-auditor")), "")
+        self.assertEqual(self.hook(dict(base, agent_type="Explore")), "")
+        self.assertEqual(self.hook(dict(base, agent_type="")), "")
+        self.assertNotEqual(self.hook(dict(base, agent_type="recall:concept-judge")), "")  # wrong JUDGE line: sent back
+        other = self.verdict_text("diff-judge", block_id="deadbeef")
+        self.assertNotEqual(self.hook(dict(base, agent_type="recall:diff-judge", last_assistant_message=other)), "")
+        concept = self.verdict_text("concept-judge")  # not requested for this block
+        self.assertNotEqual(self.hook(dict(base, agent_type="recall:concept-judge", last_assistant_message=concept)), "")
+        self.assertEqual(self.verdict_line(), "Review: MISSING diff-judge")
+        self.assertEqual(self.hook(dict(base, agent_type="recall:diff-judge", hook_event_name="SubagentStart")), "")
+        self.srs("discard")
+        self.srs("end")
+        self.assertEqual(self.hook(dict(base, agent_type="recall:diff-judge")), "")  # no session: nothing to do
+
+    def test_the_hook_log_is_opt_in(self):
+        self.plan("1. First")
+        self.edit_via_hook("Math/Eigendecomposition.md", self.EIGEN + "one\n")
+        self.prepare()
+        self.judge("diff-judge")
+        self.assertFalse((self.vault / ".srs/review/hook-log.jsonl").exists())
+        self.env["RECALL_HOOK_LOG"] = "1"
+        self.judge("diff-judge", agent_id="agent-2")
+        lines = (self.vault / ".srs/review/hook-log.jsonl").read_text().splitlines()
+        self.assertEqual(json.loads(lines[0])["agent_id"], "agent-2")
+
+    def clear_block(self, block_id=None, judges=("diff-judge",)):
+        for judge in judges:
+            self.judge(judge, block_id=block_id, agent_id=f"agent-{judge}")
+
+    def test_a_cleared_block_is_committed_with_its_verdicts(self):
+        self.plan("1. Eigendecomposition: First")
+        self.edit_via_hook("Math/Eigendecomposition.md", self.EIGEN + "one\n")
+        self.prepare()
+        self.clear_block()
+        self.assertEqual(self.verdict_line(), "Review: PASS")
+        self.srs("inbox", "remove", self.first)
+        out = self.srs("commit", "--review", self.first, "-m", "integrate: First").stdout
+        self.assertIn("Committed", out)
+        self.assertEqual(self.git("log", "-1", "--format=%s").strip(), "integrate: First")
+        body = self.git("log", "-1", "--format=%b").strip()
+        self.assertEqual(body, "Reviewed by agents.\ndiff-judge: PASS")
+        self.assertFalse((self.vault / ".srs/review" / self.first).exists())
+        self.assertEqual(sorted(self.git("show", "--name-only", "--format=", "HEAD").split()),
+                         ["Math/Eigendecomposition.md", "inbox.md"])
+        self.assertNotIn(".srs/review", self.git("status", "--porcelain"))
+
+    def test_a_block_is_not_committed_without_a_clean_review(self):
+        self.plan("1. Eigendecomposition: First")
+        self.edit_via_hook("Math/Eigendecomposition.md", self.EIGEN + "one\n")
+        proc = self.srs("commit", "--review", self.first, "-m", "integrate: First", check=False)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("no review in progress", proc.stderr)
+        self.prepare()
+        proc = self.srs("commit", "--review", self.first, "-m", "integrate: First", check=False)
+        self.assertIn("verdict", proc.stderr)
+        self.judge("diff-judge", verdict="REVISE", failures={"V": 'a.md: "x" — no'})
+        proc = self.srs("commit", "--review", self.first, "-m", "integrate: First", check=False)
+        self.assertIn("review final", proc.stderr)
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(self.git("log", "-1", "--format=%s").strip(), "vault: manual edits")
+
+    def test_failed_checks_cannot_be_committed(self):
+        self.plan("1. Bayes: First")
+        self.edit_via_hook("Math/Eigendecomposition.md", "# Eigen\nreworded\n")
+        self.assertIn("Checks: FAIL", self.prepare().stdout)
+        proc = self.srs("commit", "--review", self.first, "-m", "integrate: First", check=False)
+        self.assertIn("checks", proc.stderr)
+        self.assertEqual(proc.returncode, 2)
+
+    def test_editing_after_the_judges_passed_is_refused(self):
+        self.plan("1. Eigendecomposition: First")
+        self.edit_via_hook("Math/Eigendecomposition.md", self.EIGEN + "one\n")
+        self.prepare()
+        self.clear_block()
+        self.edit_via_hook("Math/Eigendecomposition.md", self.EIGEN + "one\nsomething the judge never saw\n")
+        proc = self.srs("commit", "--review", self.first, "-m", "integrate: First", check=False)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("changed after the last review step", proc.stderr)
+        final = self.srs("review", "final", self.first, "--note", "tweak", check=False)
+        self.assertIn("nothing to revise", final.stderr)
+        self.prepare()  # starting over has the judges see it
+        self.assertEqual(self.verdict_line(), "Review: MISSING diff-judge")
+
+    def test_one_revision_is_allowed_after_a_revise_verdict(self):
+        self.plan("1. Eigendecomposition: First")
+        self.edit_via_hook("Math/Eigendecomposition.md", self.EIGEN + "one\npadding\n")
+        self.prepare()
+        self.judge("diff-judge", verdict="REVISE", failures={"V": 'Math/Eigendecomposition.md: "padding" — not the user\'s'})
+        self.assertEqual(self.srs("review", "final", self.first, check=False).returncode, 1)  # --note is required
+        self.edit_via_hook("Math/Eigendecomposition.md", self.EIGEN + "one\n")
+        out = self.srs("review", "final", self.first, "--note", "removed the padding").stdout
+        self.assertIn("Checks: ok", out)
+        self.assertNotIn("padding", (self.vault / ".srs/review" / self.first / "input.md").read_text().split("## Diff")[1])
+        again = self.srs("review", "final", self.first, "--note", "again", check=False)
+        self.assertIn("already revised once", again.stderr)
+        self.srs("inbox", "remove", self.first)
+        self.srs("commit", "--review", self.first, "-m", "integrate: First")
+        body = self.git("log", "-1", "--format=%b").strip()
+        self.assertEqual(body, "Reviewed by agents.\ndiff-judge: REVISE (V) — writer: removed the padding")
+
+    def test_a_revision_that_needs_the_concept_judge_is_not_accepted(self):
+        self.plan("1. Eigendecomposition: First")
+        self.edit_via_hook("Math/Eigendecomposition.md", self.EIGEN + "one\npadding\n")
+        self.prepare()
+        self.judge("diff-judge", verdict="REVISE", failures={"V": 'x.md: "padding" — no'})
+        self.edit_via_hook("Math/Eigendecomposition.md", self.EIGEN + "one\n## Trace\nsum\n")
+        out = self.srs("review", "final", self.first, "--note", "added a section").stdout
+        self.assertIn("Checks: FAIL", out)
+        self.assertIn("now needs concept-judge", out)
+        self.assertEqual(self.srs("commit", "--review", self.first, "-m", "integrate: First", check=False).returncode, 2)
+
+    def test_both_judges_are_committed_when_a_concept_is_new(self):
+        self.plan("1. Eigendecomposition: First")
+        self.edit_via_hook("Math/Eigendecomposition.md", self.EIGEN + "## Trace\nsum\n")
+        self.edit_via_hook("index.md", "# Index\n\n## [[Eigendecomposition]]\n- Eigenvectors\n- Trace\n\n"
+                           "## [[Bayes]]\n- Bayes' theorem\n")
+        self.assertIn("recall:concept-judge", self.prepare().stdout)
+        self.clear_block()
+        self.assertEqual(self.verdict_line(), "Review: MISSING concept-judge")
+        self.clear_block(judges=("concept-judge",))
+        self.srs("inbox", "remove", self.first)
+        self.srs("commit", "--review", self.first, "-m", "integrate: First")
+        self.assertEqual(self.git("log", "-1", "--format=%b").strip(),
+                         "Reviewed by agents.\ndiff-judge: PASS\nconcept-judge: PASS")
+
+    def test_parking_saves_the_proposal_and_leaves_the_vault_clean(self):
+        self.plan("1. Eigendecomposition: First; new page Fresh")
+        self.edit_via_hook("Math/Eigendecomposition.md", self.EIGEN + "one\n")
+        self.edit_via_hook("wiki/Fresh.md", "# Fresh\nnew\n")
+        self.prepare()
+        out = self.srs("review", "park", self.first, "--reason", "the judge disagrees").stdout
+        self.assertIn("Parked block", out)
+        self.assertEqual((self.vault / "Math/Eigendecomposition.md").read_text(), self.EIGEN)
+        self.assertFalse((self.vault / "wiki/Fresh.md").exists())
+        self.assertEqual(self.git("status", "--porcelain").strip(), "")
+        entry = json.loads((self.vault / ".srs/review/supervision.json").read_text())[self.first]
+        self.assertEqual((entry["title"], entry["reason"], entry["patch"]), ("First", "the judge disagrees", True))
+        self.assertEqual(sorted(entry["files"]), ["Math/Eigendecomposition.md", "wiki/Fresh.md"])
+        self.assertEqual(self.srs("review", "park", self.first, check=False).returncode, 1)  # --reason is required
+
+    def test_a_parked_proposal_can_be_restored_for_the_human_flow(self):
+        self.plan("1. Eigendecomposition: First; new page Fresh")
+        self.edit_via_hook("Math/Eigendecomposition.md", self.EIGEN + "one\n")
+        self.edit_via_hook("wiki/Fresh.md", "# Fresh\nnew\n")
+        self.prepare()
+        self.srs("review", "park", self.first, "--reason", "needs a look")
+        self.srs("review", "restore", self.first)
+        self.assertEqual((self.vault / "wiki/Fresh.md").read_text(), "# Fresh\nnew\n")
+        self.assertIn("one", (self.vault / "Math/Eigendecomposition.md").read_text())
+        diff = self.srs("diff").stdout
+        self.assertIn("wiki/Fresh.md", diff)
+        self.assertIn("+one", diff)
+        self.srs("commit", "-m", "integrate: First")  # the human flow commits what was restored
+        self.assertEqual(sorted(self.git("show", "--name-only", "--format=", "HEAD").split()),
+                         ["Math/Eigendecomposition.md", "wiki/Fresh.md"])
+
+    def test_restoring_fails_when_the_pages_moved_on_or_there_is_no_patch(self):
+        self.plan("1. Eigendecomposition: First")
+        self.edit_via_hook("Math/Eigendecomposition.md", self.EIGEN + "one\n")
+        self.prepare()
+        self.srs("review", "park", self.first, "--reason", "r")
+        self.edit_via_hook("Math/Eigendecomposition.md", "# Eigen\nsomething else entirely\n")
+        self.srs("commit", "-m", "integrate: another block")
+        proc = self.srs("review", "restore", self.first, check=False)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("Patch no longer applies: redo the block.", proc.stderr)
+        self.assertEqual(self.srs("review", "restore", "deadbeef", check=False).returncode, 2)
+        self.srs("review", "park", self.second, "--waiting", "--reason", "waits for First")
+        proc = self.srs("review", "restore", self.second, check=False)
+        self.assertIn("No saved proposal", proc.stderr)
+
+    def test_a_block_waiting_for_another_leaves_the_vault_alone(self):
+        self.edit_via_hook("Math/Bayes.md", "# Bayes\nunrelated pending edit\n")
+        self.srs("review", "park", self.second, "--waiting", "--reason", "waits for First")
+        self.assertIn("unrelated pending edit", (self.vault / "Math/Bayes.md").read_text())
+        entry = json.loads((self.vault / ".srs/review/supervision.json").read_text())[self.second]
+        self.assertEqual((entry["waiting"], entry["patch"], entry["files"]), (True, False, []))
+
+    def test_parked_blocks_show_in_the_context_and_survive_the_session(self):
+        self.plan("1. First")
+        self.edit_via_hook("Math/Eigendecomposition.md", self.EIGEN + "one\n")
+        self.prepare()
+        self.srs("review", "park", self.first, "--reason", "no verdict captured")
+        self.srs("end")
+        self.assertFalse((self.vault / ".srs/review/plan.md").exists())
+        self.assertFalse((self.vault / ".srs/review" / self.first).exists())
+        context = self.srs("context", "integrate").stdout
+        self.assertIn("## Blocks waiting for supervision", context)
+        self.assertIn(f"[{self.first}] First — no verdict captured", context)
+        self.srs("begin", "integrate")
+        self.assertTrue((self.vault / ".srs/review/supervision.json").exists())
+        self.srs("inbox", "remove", self.first)  # integrated by hand: no longer waiting
+        self.assertFalse((self.vault / ".srs/review/supervision.json").exists())
+        self.assertNotIn("waiting for supervision", self.srs("context", "integrate").stdout)
+
+    def test_an_edited_block_is_no_longer_waiting(self):
+        self.srs("review", "park", self.second, "--waiting", "--reason", "r")
+        self.srs("end")
+        self.write("inbox.md", "Intro.\n\n## First\none\n\n## Second\ntwo, edited\n")
+        self.assertNotIn("waiting for supervision", self.srs("context", "integrate").stdout)
+        self.srs("begin", "integrate")
+        self.assertFalse((self.vault / ".srs/review/supervision.json").exists())
+
+    def test_review_files_stay_out_of_git_even_in_an_older_vault(self):
+        gitignore = self.vault / ".gitignore"
+        gitignore.write_text("\n".join(l for l in gitignore.read_text().splitlines() if "review" not in l) + "\n")
+        self.srs("end")
+        self.srs("begin", "integrate")  # commits the .gitignore change as a manual edit
+        self.plan("1. First")
+        self.edit_via_hook("Math/Eigendecomposition.md", self.EIGEN + "one\n")
+        self.prepare()
+        self.srs("review", "park", self.first, "--reason", "r")
+        self.assertEqual(self.git("status", "--porcelain").strip(), "")
+        self.srs("end")
+        self.srs("begin", "quiz")
+        self.assertNotIn("review", self.git("ls-files"))
+        self.srs("end")
+
+    def test_review_works_in_a_vault_inside_a_bigger_repository(self):
+        outer = self.tmp / "outer"
+        inner = outer / "notes" / "vault"
+        inner.mkdir(parents=True)
+        (outer / "README").write_text("outer\n")
+        subprocess.run(["git", "init", "-q"], cwd=str(outer), env=self.env, check=True)
+        (inner / "a.md").write_text("# A\nold\n")
+        (inner / "inbox.md").write_text("## Blk\ntext\n")
+        self.srs("init", cwd=inner)
+        self.srs("begin", "integrate", cwd=inner)
+        block = re.search(r"\[([0-9a-f]{8})\]", self.srs("inbox", "list", cwd=inner).stdout).group(1)
+        self.srs("plan", "save", "1. a: Blk", cwd=inner)
+        for rel, text in (("a.md", "# A\nold\nnew\n"), ("b.md", "# B\n")):
+            self.guard({"tool_name": "Write", "tool_input": {"file_path": str(inner / rel)}, "cwd": str(inner)})
+            (inner / rel).write_text(text)
+        self.assertIn("Checks: ok", self.srs("review", "prepare", block, cwd=inner).stdout)
+        self.srs("review", "park", block, "--reason", "r", cwd=inner)
+        self.assertEqual((inner / "a.md").read_text(), "# A\nold\n")
+        self.assertFalse((inner / "b.md").exists())
+        self.srs("review", "restore", block, cwd=inner)
+        self.assertEqual((inner / "a.md").read_text(), "# A\nold\nnew\n")
+        self.assertEqual((inner / "b.md").read_text(), "# B\n")
+        self.srs("commit", "-m", "integrate: Blk", cwd=inner)
+        files = subprocess.run(["git", "show", "--name-only", "--format=", "HEAD"], cwd=str(outer), env=self.env,
+                               capture_output=True, text=True).stdout.split()
+        self.assertEqual(sorted(files), ["notes/vault/a.md", "notes/vault/b.md"])
+        self.srs("end", cwd=inner)
+
+    def test_new_vaults_ignore_the_review_folder(self):
+        self.assertIn(".srs/review/", (self.vault / ".gitignore").read_text())
+
+    def test_config_switches_the_review_mode(self):
+        self.srs("end")
+        self.assertIn("Review mode: human", self.srs("context", "integrate").stdout)
+        out = self.srs("config", "--integrate-review", "agent").stdout
+        self.assertIn("config: integrate_review human -> agent", out)
+        self.assertIn("/integrate review: agent", out)
+        self.assertEqual(self.git("log", "-1", "--format=%s").strip(), "config: integrate_review human -> agent")
+        self.assertEqual(json.loads((self.vault / ".srs/config.json").read_text())["integrate_review"], "agent")
+        self.assertIn("Review mode: agent", self.srs("context", "integrate").stdout)
+        self.assertIn("/integrate review: agent", self.srs("context", "config").stdout)
+        self.assertIn("Nothing changed.", self.srs("config", "--integrate-review", "agent").stdout)
+        self.assertEqual(self.srs("config", "--integrate-review", "robot", check=False).returncode, 2)
+        out = self.srs("config", "--integrate-review", "human", "--new-per-day", "3").stdout
+        self.assertIn("new_per_day 5 -> 3, integrate_review agent -> human", out)
+
+    def test_an_unknown_review_mode_in_the_config_is_reported(self):
+        config = json.loads((self.vault / ".srs/config.json").read_text())
+        config["integrate_review"] = "robot"
+        (self.vault / ".srs/config.json").write_text(json.dumps(config))
+        self.assertIn("ERROR: Unknown integrate_review 'robot'", self.srs("context", "integrate").stdout)
+
+    def test_the_welcome_counts_blocks_waiting_for_supervision(self):
+        self.srs("review", "park", self.second, "--waiting", "--reason", "r")
+        self.srs("end")
+        self.set_language("English")
+        self.assertIn("(1 waiting for supervision)", self.run_welcome())
+        self.set_language("Brazilian Portuguese")
+        self.assertIn("(1 aguardando supervisão)", self.run_welcome())
+
+    def set_language(self, language):
+        path = self.vault / ".srs/config.json"
+        config = json.loads(path.read_text(encoding="utf-8"))
+        config["language"] = language
+        path.write_text(json.dumps(config), encoding="utf-8")
+
+    def run_welcome(self):
+        proc = subprocess.run([sys.executable, str(SRS), "--today", "2026-01-10", "welcome"], cwd=str(self.vault),
+                              env=self.env, capture_output=True, text=True, input="")
+        return json.loads(proc.stdout)["systemMessage"]
 
 
 if __name__ == "__main__":
