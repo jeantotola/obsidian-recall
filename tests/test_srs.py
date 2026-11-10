@@ -2148,6 +2148,18 @@ class ContextTest(VaultCase):
         self.assertIn("Bayes' theorem", out)
         self.assertNotIn("- Eigenvectors", out)
 
+    def test_promote_context_asks_to_audit_candidate_pages_without_a_seal(self):
+        self.index("## [[Eigendecomposition]]\n- Eigenvectors\n\n## [[Bayes]]\n- Bayes' theorem\n")
+        self.srs("verify", "Math/Bayes.md", "Eigendecomposition")
+        out = self.srs("context", "promote").stdout
+        self.assertNotIn("## Audit first", out)
+        self.write("Math/Bayes.md", "# Bayes\nchanged\n")
+        out = self.srs("context", "promote").stdout
+        self.assertIn("## Audit first (1 candidate pages without a valid seal)", out)
+        self.assertIn("### Math/Bayes.md (audit first)", out)
+        self.assertIn("### Math/Eigendecomposition.md\n", out)
+        self.assertNotIn("Held back", out)
+
 
 class StatsTest(VaultCase):
     def log(self, *groups):

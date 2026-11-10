@@ -148,6 +148,8 @@ Question rules, editable in `.srs/quiz-rules.md`:
 2. **`/promote <page, topic or concept>`** lists the matching concepts that are only in the index, with the same review-or-not suggestion.
 3. **`/promote` alone** suggests a batch from the pages most recently touched by `/integrate`, found through the git log.
 
+`/promote` never proposes from a stale index entry. A candidate page without a valid seal was edited since its last audit, so its entry may list concepts the page no longer explains. `srs.py context promote` marks those pages "audit first", and `/promote` runs the page auditor on them before showing the list: pages that pass are sealed and their candidates stay; a page that fails is left out, with the index fix offered as a diff for approval. Pages the audit can't seal (an unresolved link, over the size limit, a shared concept name, or past the batch of 20) are held back for `/maintenance`. Pages not yet in the index are simply absent: `/setup` indexes them.
+
 Promoting many concepts at once doesn't overload any day: the queue absorbs them, and the pace is the daily limit for new concepts. Raise `new_per_day` when you have more time.
 
 Diary-style files (entries by date rather than by concept) are indexed like any other page. When there is time, `/integrate <file>` treats such a file like an inbox and moves its content into concept pages.

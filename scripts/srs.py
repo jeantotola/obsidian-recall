@@ -3518,7 +3518,35 @@ def context_promote(v: Vault, extra: list) -> list:
                 continue
         candidates[where].append(c)
     total = sum(len(v_) for v_ in candidates.values())
+    # A page edited since its last audit may have a stale entry: audit it before proposing its concepts.
+    verified = load_verified(v)
+    dup_pages = {e.page.path for entries in idx.by_key().values() if len(entries) > 1 for e in entries}
+    pages = {where: cs[0].page for where, cs in candidates.items()}
+    audit, held = [], []
+    for where in sorted(candidates):
+        page = pages[where]
+        if page.status == "ok" and seal_ok(v, verified, page) and page.path not in dup_pages:
+            continue
+        too_big = page.status == "ok" and len(read_text(v.root / page.path)) > v.limits["page_max_chars"]
+        if page.status != "ok" or too_big or page.path in dup_pages or len(audit) >= v.limits["maintenance_batch"]:
+            held.append(where)
+        else:
+            audit.append(page)
     out.append("")
+    if audit:
+        out.append(f"## Audit first ({len(audit)} candidate pages without a valid seal)")
+        out.append("Each page shows its vault path, then its absolute path in backticks. Open pages by the absolute path.")
+        for page in audit:
+            out.append(f"### {page.path}")
+            out.append(f"Absolute path: `{(v.root / page.path).as_posix()}`")
+            out += [f"    {line}" for line in page.entry_text().splitlines()]
+        out.append(f"Full index: {v.index_rel}")
+        out.append("")
+    if held:
+        out.append(f"## Held back until /maintenance fixes them ({len(held)} pages: unresolved link, over size, "
+                   "shared names, or past the audit batch)")
+        out += [f"  {where}" for where in held]
+        out.append("")
     if query:
         out.append(f"## Candidates matching \"{query}\" (in the index, not in review): {total}")
         order = sorted(candidates)
@@ -3533,7 +3561,8 @@ def context_promote(v: Vault, extra: list) -> list:
         if shown >= 200:
             out.append(f"... and {total - shown} more; narrow the query.")
             break
-        out.append(f"### {where}")
+        mark = " (audit first)" if pages[where] in audit else " (held back)" if where in held else ""
+        out.append(f"### {where}{mark}")
         for c in candidates[where]:
             out.append(f"- {c.name}" + (f"{DESC_SEP}{c.desc}" if c.desc else ""))
             shown += 1
