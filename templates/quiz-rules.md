@@ -18,6 +18,6 @@ Recall reads this file before every /quiz. Edit it to change how questions are a
 - Terse answers (keywords, fragments, arrows) are fine: judge the idea, not the prose. When a terse answer is ambiguous between knowing and guessing, ask one short follow-up instead of failing.
 - A mistake that comes only from a prerequisite with its own concept doesn't fail the concept being asked; /quiz offers to open a gap on the prerequisite instead.
 - Be strict: an answer that misses the core idea or contains a conceptual error is a fail. Lenient grading stretches intervals for nothing.
-- On a pass, say only "pass": no justification, no expected answer, no page.
+- On a pass, say only "pass", unless the answer has a flaw that doesn't fail it: a list left incomplete, an imprecise technical term, or a problem in the logic. Then add one line that names the flaw and gives the precise version. No expected answer, no page.
 - On a fail, say fail, give one line of justification, the expected answer in one or two lines, and the page.
 - The user may contest a verdict. Their word wins.

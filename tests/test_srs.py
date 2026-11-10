@@ -242,6 +242,56 @@ class AnkiTest(unittest.TestCase):
                 self.assertGreater(grown, interval)
 
 
+class RetryTest(unittest.TestCase):
+    """A retry: wrong at first, right on a second try. No growth, no lapse."""
+
+    def sched(self, algorithm, interval="same"):
+        s = sched(algorithm, fuzz=0 if algorithm == "thirds" else False)
+        s["retry"] = {"enabled": True, "interval": interval}
+        return s
+
+    def review(self, interval=20, lapses=1):
+        return {"phase": "review", "interval": interval, "ease": 2.1, "last": "2026-01-01",
+                "due": "2026-01-21", "lapses": lapses}
+
+    def test_review_keeps_interval_ease_and_lapses(self):
+        for algorithm in ("anki", "thirds"):
+            with self.subTest(algorithm=algorithm):
+                rec = srs.apply_answer(self.review(), "retry", D("2026-01-21"), self.sched(algorithm), "X")
+                self.assertEqual((rec["phase"], rec["interval"], rec["due"]), ("review", 20, "2026-02-10"))
+                self.assertEqual((rec["ease"], rec["lapses"], rec["last"]), (2.1, 1, "2026-01-21"))
+
+    def test_configured_days_cap_the_interval(self):
+        rec = srs.apply_answer(self.review(), "retry", D("2026-01-21"), self.sched("thirds", 5), "X")
+        self.assertEqual((rec["interval"], rec["due"]), (5, "2026-01-26"))
+        rec = srs.apply_answer(self.review(3), "retry", D("2026-01-21"), self.sched("thirds", 5), "X")
+        self.assertEqual(rec["interval"], 3)  # never above the current interval
+
+    def test_relearning_repeats_the_step_without_a_lapse(self):
+        rec = {"phase": "relearning", "interval": 9, "pending": 3, "due": "2026-01-21", "lapses": 2}
+        for algorithm in ("anki", "thirds"):
+            with self.subTest(algorithm=algorithm):
+                out = srs.apply_answer(rec, "retry", D("2026-01-21"), self.sched(algorithm), "X")
+                self.assertEqual((out["phase"], out["pending"], out["lapses"], out["due"]),
+                                 ("relearning", 3, 2, "2026-01-22"))
+
+    def test_new_goes_to_learning(self):
+        rec = srs.apply_answer(srs.new_record("integrate", D("2026-01-01"), 1), "retry", D("2026-01-02"),
+                               self.sched("thirds"), "X")
+        self.assertEqual((rec["phase"], rec["due"], rec["introduced"]), ("learning", "2026-01-03", "2026-01-02"))
+
+    def test_hold_is_cleared_and_the_interval_kept(self):
+        held = srs.apply_update(self.review(), D("2026-01-20"), "new part")
+        rec = srs.apply_answer(held, "retry", D("2026-01-21"), self.sched("anki"), "X")
+        self.assertNotIn("hold", rec)
+        self.assertEqual((rec["interval"], rec["lapses"]), (20, 1))
+
+    def test_bad_interval_is_refused(self):
+        for bad in (0, "long", True, -2):
+            with self.subTest(bad=bad), self.assertRaises(srs.SrsError):
+                srs.apply_answer(self.review(), "retry", D("2026-01-21"), self.sched("thirds", bad), "X")
+
+
 class UpdateTest(unittest.TestCase):
     def test_update_holds_a_review_concept_until_tomorrow(self):
         rec = {"phase": "review", "interval": 40, "due": "2026-03-01", "last": "2026-01-20"}
@@ -601,6 +651,25 @@ class PaceTest(VaultCase):
         self.assertIn("New concepts per day: 5.", out)
         self.assertIn("together: 20.", out)
         self.assertEqual(self.commits(), before)
+
+    def test_retry_is_off_until_turned_on(self):
+        self.assertIn("Retry after a wrong answer: off", self.srs("config").stdout)
+        self.assertIn("Retry after a wrong answer: off", self.srs("context", "quiz").stdout)
+        before = self.commits()
+        out = self.srs("config", "--retry", "on").stdout
+        self.assertIn("retry on", out)
+        self.assertIn("the interval stays the same", out)
+        self.assertEqual(self.config()["scheduling"]["retry"], {"enabled": True, "interval": "same"})
+        self.assertEqual(self.commits(), before + 1)
+        out = self.srs("config", "--retry-interval", "3").stdout
+        self.assertIn("retry interval same -> 3", out)
+        self.assertEqual(self.config()["scheduling"]["retry"], {"enabled": True, "interval": 3})
+        self.assertIn("the interval becomes 3 days", self.srs("context", "quiz").stdout)
+        self.assertIn("Nothing changed.", self.srs("config", "--retry", "on").stdout)
+        for bad in ("0", "soon", "-1"):
+            self.assertNotEqual(self.srs("config", "--retry-interval", bad, check=False).returncode, 0, bad)
+        self.srs("config", "--retry", "off", "--retry-interval", "same")
+        self.assertEqual(self.config()["scheduling"]["retry"], {"enabled": False, "interval": "same"})
 
     def test_set_commits_only_the_config_file(self):
         self.write("Math/Bayes.md", "unrelated edit\n")
@@ -1004,6 +1073,52 @@ class AmendTest(VaultCase):
         self.assertEqual(sorted(touched), [".srs/log.csv", ".srs/state.json"])
         self.srs("commit", "-m", "quiz: 1/1", today=self.TODAY)
         self.srs("end", today=self.TODAY)
+
+    def retry_on(self, interval="same"):
+        path = self.vault / ".srs/config.json"
+        config = json.loads(path.read_text())
+        config.setdefault("scheduling", {})["retry"] = {"enabled": True, "interval": interval}
+        path.write_text(json.dumps(config))
+
+    def test_retry_is_refused_while_off(self):
+        self.use("thirds", {self.NAME: self.evolve("review", algorithm="thirds")})
+        before = self.state()
+        refused = self.srs("record", self.NAME, "retry", today=self.TODAY, check=False)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("Retry is off", refused.stderr)
+        self.assertEqual(self.state(), before)
+        self.srs("record", self.NAME, "pass", today=self.TODAY)
+        self.assertEqual(self.srs("amend", self.NAME, "retry", today=self.TODAY, check=False).returncode, 2)
+
+    def test_retry_is_logged_kept_out_of_the_score_and_opens_the_gap(self):
+        for algorithm in ("anki", "thirds"):
+            with self.subTest(algorithm=algorithm):
+                rec = self.evolve("review", algorithm=algorithm)
+                self.use(algorithm, {self.NAME: rec})
+                self.retry_on()
+                self.srs("record", self.NAME, "retry", "--gap", "the missed idea", today=self.TODAY)
+                state = self.state()
+                self.assertEqual((state["interval"], state["lapses"]), (rec["interval"], rec["lapses"]))
+                self.assertEqual(state["gap"]["idea"], "the missed idea")
+                self.assertIn(b",retry,review,", self.log_bytes())
+                out = self.srs("today", today=self.TODAY).stdout
+                self.assertIn("Score: 0/1", out)
+                self.assertIn("Retried: Eigenvectors", out)
+                self.assertNotIn("Failed", out)
+
+    def test_amend_moves_between_all_three_results(self):
+        rec = self.evolve("review", algorithm="thirds")
+        self.use("thirds", {self.NAME: rec})
+        self.retry_on()
+        self.srs("record", self.NAME, "pass", today=self.TODAY)
+        self.srs("amend", self.NAME, "retry", today=self.TODAY)
+        retried = self.state()
+        self.assertEqual((retried["interval"], retried["lapses"]), (rec["interval"], rec["lapses"]))
+        self.srs("amend", self.NAME, "fail", today=self.TODAY)
+        self.assertEqual(self.state()["lapses"], rec["lapses"] + 1)
+        self.srs("amend", self.NAME, "retry", today=self.TODAY)
+        self.assertEqual(self.state(), retried)
+        self.assertIn(b",retry,", self.log_bytes())
 
     def test_quiz_skill_tells_how_to_contest(self):
         skill = (ROOT / "skills/quiz/SKILL.md").read_text()

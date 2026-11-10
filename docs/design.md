@@ -115,7 +115,7 @@ In practice, 20 concepts a day sustain about 2 to 3 new concepts per day once th
 
 ## Log
 
-`.srs/log.csv` has one line per recorded answer: study day, concept, pass or fail, and the phase and interval before the answer. Logs from before 0.5.0 get the interval column on the next answer; their older lines have no interval and count only in the combined rate. About 50 bytes per line, or a few hundred kilobytes per year.
+`.srs/log.csv` has one line per recorded answer: study day, concept, the result (pass, fail or retry), and the phase and interval before the answer. Logs from before 0.5.0 get the interval column on the next answer; their older lines have no interval and count only in the combined rate. About 50 bytes per line, or a few hundred kilobytes per year.
 
 The schedule doesn't depend on the log: the rules use only each concept's current state, which grows with the number of concepts, not with time. The log serves calibration (`srs.py stats`) and a possible future switch to FSRS, and it is the only record that can't be rebuilt later. Only the script reads it; it never enters the model's context. `srs.py amend` rewrites the result on today's line for a contested answer; no other part of the line or of the log changes. Question texts are not logged; each concept keeps its last three questions in the state, so the next question can take another angle.
 

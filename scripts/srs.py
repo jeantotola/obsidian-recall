@@ -49,6 +49,7 @@ DESC_SEP = " — "  # space, em dash, space
 SOURCE_RANK = {"integrate": 0, "promote": 1}
 EXCLUSION_HINTS = ("template", "attachment", "asset", "excalidraw", "daily", "journal", "archive")
 PHASES = ("new", "learning", "review", "relearning")
+RESULTS = ("pass", "fail", "retry")  # retry: wrong at first, then right on a second try without hints
 REVIEW_MODES = ("human", "agent")
 REVIEW_DIR = "review"  # .srs/review/: state of the agent review, never committed
 JUDGES = {"diff-judge": "VPER", "concept-judge": "ODI"}  # agent name -> the criteria letters it answers
@@ -115,6 +116,9 @@ DEFAULT_CONFIG = {
         "new_per_day": 5,
         "day_starts_at": 4,
         "mature_interval": 21,  # days; a review answered at this interval or longer is mature
+        # A wrong answer to an open question that the user corrects on a second try, without hints.
+        # Off by default. interval: "same" keeps the interval; a number of days sets it, never above it.
+        "retry": {"enabled": False, "interval": "same"},
         "anki": dict(ANKI_DEFAULTS),
         "thirds": dict(THIRDS_DEFAULTS),
     },
@@ -858,14 +862,50 @@ def algorithm(sched: dict):
     return name, params, entry
 
 
-def apply_answer(rec: dict, passed: bool, today: dt.date, sched: dict, name: str) -> dict:
-    """Apply one answer with the configured algorithm. Returns the updated record."""
+def retry_settings(sched: dict):
+    """(enabled, interval): interval is "same" or a number of days."""
+    raw = sched.get("retry") or {}
+    enabled = raw.get("enabled") is True
+    interval = raw.get("interval", "same")
+    if interval != "same" and not (isinstance(interval, int) and not isinstance(interval, bool) and interval >= 1):
+        raise SrsError(f"Unknown scheduling.retry.interval '{interval}' in .srs/config.json. "
+                       "Use \"same\" or a number of days (1 or more).")
+    return enabled, interval
+
+
+def apply_retry(rec: dict, today: dt.date, sched: dict) -> None:
+    """A retry: no growth, no lapse, no ease change. In review the interval stays the same,
+    or drops to the configured number of days when that is shorter; a concept in learning
+    or relearning repeats its step the next day, keeping its pending interval."""
+    tomorrow = (today + days(1)).isoformat()
+    phase = rec["phase"]
+    if phase in ("new", "learning"):
+        rec.update(phase="learning", interval=0, pending=None, due=tomorrow)
+    elif phase == "relearning":
+        rec.update(due=tomorrow)
+    else:
+        _, setting = retry_settings(sched)
+        current = max(1, int(rec.get("interval") or 1))
+        interval = current if setting == "same" else min(int(setting), current)
+        rec.update(interval=interval, due=(today + days(interval)).isoformat())
+
+
+def apply_answer(rec: dict, result, today: dt.date, sched: dict, name: str) -> dict:
+    """Apply one answer with the configured algorithm. `result` is "pass", "fail" or "retry"
+    (True and False stand for pass and fail). Returns the updated record."""
     rec = dict(rec)
     if rec.get("phase") not in PHASES:
         raise SrsError(f"Unknown phase '{rec.get('phase')}' for {name}.")
+    if isinstance(result, bool):
+        result = "pass" if result else "fail"
+    if result not in RESULTS:
+        raise SrsError(f"Unknown result '{result}'. Use one of: {', '.join(RESULTS)}.")
+    passed = result == "pass"
     _, params, entry = algorithm(sched)
     held = rec.pop("hold", False)
-    if held and passed and rec["phase"] == "review":
+    if result == "retry":
+        apply_retry(rec, today, sched)
+    elif held and passed and rec["phase"] == "review":
         # The new content was remembered: keep the interval, without growth.
         interval = max(1, int(rec.get("interval") or 1))
         rec["due"] = (today + days(interval)).isoformat()
@@ -1793,7 +1833,8 @@ def apply_gap(updated: dict, before: dict, passed: bool, today: dt.date, idea) -
     target it. Returns text for the answer's output.
 
     A question on new content (a focus) doesn't test the gap, so its pass leaves the gap open,
-    and its fail replaces the gap when it names another idea."""
+    and its fail replaces the gap when it names another idea. A retry counts as a fail here:
+    the first answer missed the idea, so the gap opens or stays open."""
     gap = before.get("gap")
     tested = gap and not before.get("focus")
     if passed:
@@ -1811,6 +1852,12 @@ def apply_gap(updated: dict, before: dict, passed: bool, today: dt.date, idea) -
     return ""
 
 
+def require_retry(v: Vault, result: str) -> None:
+    if result == "retry" and not retry_settings(v.sched)[0]:
+        raise SrsError("Retry is off in this vault: record pass or fail. "
+                       "Turn it on with srs.py config --retry on.", 2)
+
+
 def cmd_record(args):
     v = open_vault(args)
     state = load_state(v)
@@ -1824,11 +1871,12 @@ def cmd_record(args):
     items, _ = daily_list(state, v.sched, v.today, neighbors)
     if name not in items:
         raise SrsError(f"{name} is not in today's list.", 2)
+    require_retry(v, args.result)
     before = rec["phase"]
     interval = int(rec.get("interval") or 0)
     # The snapshot lets `amend` undo this answer on the same study day; the next record replaces it.
     snapshot = copy.deepcopy({k: val for k, val in rec.items() if k != "undo"})
-    updated = apply_answer(rec, args.result == "pass", v.today, v.sched, name)
+    updated = apply_answer(rec, args.result, v.today, v.sched, name)
     note = apply_gap(updated, snapshot, args.result == "pass", v.today, args.gap)
     if args.question:
         updated["questions"] = (list(rec.get("questions") or []) + [short(args.question, 200)])[-3:]
@@ -1895,9 +1943,10 @@ def cmd_amend(args):
     if registered == args.result:
         raise SrsError(f"{name} is already recorded as {args.result} today. "
                        "Amend it with the other result if the verdict was wrong.", 2)
+    require_retry(v, args.result)
     restored = copy.deepcopy(undo["before"])
     before = restored.get("phase")
-    updated = apply_answer(restored, args.result == "pass", v.today, v.sched, name)
+    updated = apply_answer(restored, args.result, v.today, v.sched, name)
     note = apply_gap(updated, undo["before"], args.result == "pass", v.today, args.gap)
     updated["questions"] = list(rec.get("questions") or [])  # as they were after the record
     updated["undo"] = {"day": today, "before": undo["before"]}  # amending again starts from the same snapshot
@@ -1913,11 +1962,14 @@ def cmd_today(args):
     rows = [r for r in read_log(v) if r["day"] == t]
     passed = [r["concept"] for r in rows if r["result"] == "pass"]
     failed = [r["concept"] for r in rows if r["result"] == "fail"]
+    retried = [r["concept"] for r in rows if r["result"] == "retry"]
     state = load_state(v)
     print(f"Score: {len(passed)}/{len(rows)}")
+    if retried:
+        print("Retried: " + ", ".join(retried))
     if failed:
         print("Failed: " + ", ".join(failed))
-    leeches = [n for n in passed + failed
+    leeches = [n for n in passed + retried + failed
                if int(state["concepts"].get(n, {}).get("lapses") or 0) >= v.leech_at]
     if leeches:
         print("Leeches: " + ", ".join(sorted(set(leeches))))
@@ -2083,6 +2135,16 @@ def pace_lines(v: Vault) -> list:
     return out
 
 
+def retry_line(v: Vault) -> str:
+    enabled, interval = retry_settings(v.sched)
+    if not enabled:
+        return "Retry after a wrong answer: off (a wrong answer is a fail)."
+    keep = ("the interval stays the same" if interval == "same"
+            else f"the interval becomes {plural(interval, 'day')}, or stays the same if shorter")
+    return (f"Retry after a wrong answer: on. A wrong answer to an open question gets one more try "
+            f"without hints; right on that try, it is a retry: no lapse, {keep}.")
+
+
 def review_mode_line(v: Vault) -> str:
     mode = v.integrate_review
     what = ("you approve each diff" if mode == "human"
@@ -2152,9 +2214,24 @@ def cmd_config(args):
             raise SrsError("--daily-limit must be 1 or more.")
         wanted["daily_limit"] = args.daily_limit
     changes = {k: value for k, value in wanted.items() if v.sched[k] != value}
+    enabled, interval = retry_settings(v.sched)
+    retry_wanted = {}
+    if args.retry is not None:
+        retry_wanted["enabled"] = args.retry == "on"
+    if args.retry_interval is not None:
+        value = args.retry_interval.strip().lower()
+        if value != "same":
+            if not value.isdigit() or int(value) < 1:
+                raise SrsError("--retry-interval must be 'same' or a number of days (1 or more).")
+            value = int(value)
+        retry_wanted["interval"] = value
+    retry_changes = {k: value for k, value in retry_wanted.items()
+                     if {"enabled": enabled, "interval": interval}[k] != value}
     mode, current = args.integrate_review, v.config.get("integrate_review")
     prompt = v.config["integrate_review_prompt"]
     summary = [f"{k} {v.sched[k]} -> {value}" for k, value in changes.items()]
+    summary += [f"retry {'on' if value else 'off'}" if k == "enabled" else f"retry interval {interval} -> {value}"
+                for k, value in retry_changes.items()]
     review_raw = {}  # what goes into the file for the integrate review settings
     if args.remind_later:
         if (mode or current) != "human":
@@ -2170,7 +2247,7 @@ def cmd_config(args):
         if not args.remind_later:
             review_raw["prompt"] = {"asked": v.today.isoformat(), "asked_head": head_sha(v),
                                     "wait_days": int(prompt["first_days"])}
-    if (wanted or mode is not None or args.remind_later) and not summary:
+    if (wanted or retry_wanted or mode is not None or args.remind_later) and not summary:
         print("Nothing changed.")
     if summary:
         repo = require_repo(v)
@@ -2178,6 +2255,9 @@ def cmd_config(args):
         raw = read_json(path, {})  # the file as written: load_config's defaults stay out of it
         for key, value in changes.items():
             raw.setdefault("scheduling", {})[key] = value
+        if retry_changes:
+            raw.setdefault("scheduling", {}).setdefault("retry", {}).update(retry_changes)
+            v.sched["retry"] = dict(v.sched.get("retry") or {}, **retry_changes)
         if "mode" in review_raw:
             raw["integrate_review"] = review_raw["mode"]
             v.config["integrate_review"] = review_raw["mode"]
@@ -2190,7 +2270,7 @@ def cmd_config(args):
         sha = repo.commit([f"{SRS_DIR}/config.json"], f"config: {text}")
         v.sched.update(changes)
         print(f"Committed {sha}: config: {text}.")
-    print("\n".join(pace_lines(v) + [review_mode_line(v)]))
+    print("\n".join(pace_lines(v) + [retry_line(v), review_mode_line(v)]))
 
 
 def pass_rate(rows: list) -> float:
@@ -3474,6 +3554,8 @@ def context_quiz(v: Vault) -> list:
     out.append("## Today's list")
     out += render_due(v, state, idx)
     out.append("")
+    out.append(retry_line(v))
+    out.append("")
     out.append("## Quiz rules (.srs/quiz-rules.md)")
     rules_path = v.srs / "quiz-rules.md"
     out.append(read_text(rules_path).strip() if rules_path.exists() else read_text(TEMPLATES / "quiz-rules.md").strip())
@@ -3578,6 +3660,7 @@ def context_config(v: Vault) -> list:
     out.append("")
     out.append("## Current pace")
     out += pace_lines(v)
+    out.append(retry_line(v))
     out.append(review_mode_line(v))
     out.append("")
     out.append("## Rules")
@@ -3689,14 +3772,14 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("due", help="today's quiz list").set_defaults(func=cmd_due)
     p = sub.add_parser("record", help="record an answer")
     p.add_argument("concept")
-    p.add_argument("result", choices=["pass", "fail"])
+    p.add_argument("result", choices=RESULTS)
     p.add_argument("--question", help="the question asked, in a few plain words")
-    p.add_argument("--gap", help="on a fail, the idea the answer missed, in a few plain words")
+    p.add_argument("--gap", help="on a fail or a retry, the idea the first answer missed, in a few plain words")
     p.set_defaults(func=cmd_record)
     p = sub.add_parser("amend", help="correct today's answer for a concept (a contested verdict)")
     p.add_argument("concept")
-    p.add_argument("result", choices=["pass", "fail"])
-    p.add_argument("--gap", help="when amending to fail, the idea the answer missed")
+    p.add_argument("result", choices=RESULTS)
+    p.add_argument("--gap", help="when amending to fail or retry, the idea the answer missed")
     p.set_defaults(func=cmd_amend)
     p = sub.add_parser("gap", help="open a concept's gap by hand, or close it")
     p.add_argument("concept")
@@ -3734,6 +3817,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--daily-limit", type=int, help="concepts per day, reviews and new together")
     p.add_argument("--integrate-review", choices=REVIEW_MODES, help="who reviews /integrate: you (human) or judge agents (agent)")
     p.add_argument("--remind-later", action="store_true", help="postpone the reminder to try the agent review")
+    p.add_argument("--retry", choices=["on", "off"], help="a second try, without hints, after a wrong answer to an open question")
+    p.add_argument("--retry-interval", metavar="same|DAYS", help="interval after a retry: 'same' keeps it, a number of days caps it")
     p.set_defaults(func=cmd_config)
 
     sub.add_parser("check", help="deterministic maintenance checks").set_defaults(func=cmd_check)

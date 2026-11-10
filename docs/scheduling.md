@@ -2,7 +2,7 @@
 
 This document gives the exact rules of Recall's scheduling algorithms. The [README](../README.md#scheduling) has the summary; the code is in [`scripts/srs.py`](../scripts/srs.py), under "Scheduling".
 
-Answers are pass or fail. The script applies every answer and computes every date; the model never does. Two algorithms are built in:
+Answers are pass or fail, plus retry when `scheduling.retry.enabled` is on. The script applies every answer and computes every date; the model never does. Two algorithms are built in:
 
 - **`anki`**, the default: Anki's classic scheduler (SM-2) with Anki's default deck options, adapted to pass and fail.
 - **`thirds`**: Recall's own rules, with no ease and a lapse that keeps a third of the interval.
@@ -26,13 +26,15 @@ Each concept stores one date, the study day from which it is due, and stays due 
 
 **One answer a day.** The script records one answer per concept per study day. `/quiz` asks failed concepts again at the end of the session, but those repeats are practice and aren't recorded.
 
-**Amending an answer.** `srs.py record` keeps, in the concept's record, a snapshot of the record as it was before the answer, with the study day (the next `record` replaces it). `srs.py amend "<Concept>" pass|fail` is for a verdict the user contests. It works only for a concept answered today, whose snapshot is from today, and only with a result different from the recorded one; otherwise it refuses and says what to do. It restores the snapshot, applies the configured algorithm again with the new result (a hold, lapses and leeches come back as they were), keeps the recent questions as they were after the record, and changes only the result on today's line of `log.csv`. Amending again always starts from the same snapshot, so fail → pass → fail works. From the next study day on, the answer is final.
+**Amending an answer.** `srs.py record` keeps, in the concept's record, a snapshot of the record as it was before the answer, with the study day (the next `record` replaces it). `srs.py amend "<Concept>" pass|fail|retry` is for a verdict the user contests. It works only for a concept answered today, whose snapshot is from today, and only with a result different from the recorded one; otherwise it refuses and says what to do. It restores the snapshot, applies the configured algorithm again with the new result (a hold, lapses and leeches come back as they were), keeps the recent questions as they were after the record, and changes only the result on today's line of `log.csv`. Amending again always starts from the same snapshot, so fail → pass → fail works. From the next study day on, the answer is final.
 
 **Graduation.** The first pass of a new or learning concept moves it to review; with the default parameters it comes back the next day. A fail sends it to learning, back the next day.
 
 **Late reviews.** When a concept is answered after its due date, a pass counts half the delay. Both algorithms reach the same base: `interval + days_late / 2`. A 10-day interval answered 10 days late grows from 15 days instead of 10.
 
 **New content (hold).** When `/integrate` adds content to a concept in review, the concept is put on hold: due the next study day, with a focus line that aims the question at the new part. On that answer, a pass keeps the interval as it was, without growth, and a fail is a normal lapse. A concept in learning or relearning only gets the focus.
+
+**Retry.** Off by default. When `scheduling.retry.enabled` is true, a wrong answer to an open question gets one more try without hints, and a right answer on that try is recorded as `retry`. The same rules apply with every algorithm: no lapse, no ease change, no growth. A concept in review keeps its interval, or takes `scheduling.retry.interval` days when that number is shorter (`"same"`, the default, always keeps it); one in new or learning goes to learning and comes back the next day; one in relearning repeats its step the next day with its pending interval unchanged. For the gap, a retry counts as a fail: the first answer missed the idea. `srs.py stats` and the score count only passes, so a retry lowers the measured retention as a fail does. With retry off, `srs.py record` refuses it.
 
 **Gaps don't touch the schedule.** A fail also records the idea the answer missed, and the concept's questions target it until a pass at least 3 days after the previous answer. This changes what is asked, never the dates, and it works the same with every algorithm (see [the design](design.md)).
 

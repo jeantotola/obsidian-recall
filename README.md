@@ -177,7 +177,7 @@ With `new_page_placement` set to `folders`, `/integrate` picks a folder for each
 
 ## Scheduling
 
-Answers are pass or fail. Each concept in the schedule has one date, the day from which it is due, and the script computes every date. Two algorithms are built in. `/setup` asks which one to use, and you can switch later in `.srs/config.json`.
+Answers are pass or fail, plus retry when you turn it on (below). Each concept in the schedule has one date, the day from which it is due, and the script computes every date. Two algorithms are built in. `/setup` asks which one to use, and you can switch later in `.srs/config.json`.
 
 | | `anki` (default) | `thirds` |
 | --- | --- | --- |
@@ -195,7 +195,8 @@ Both share the rest:
 - A late review counts half the delay: a 10-day interval answered 10 days late grows from 15 days instead of 10.
 - A failed concept comes back the next day. The same-day repeat in `/quiz` is practice and isn't recorded.
 - A fail also records the idea you missed, called a gap. The concept's next questions test that idea until you pass it at least 3 days after the previous answer, and then the gap disappears. Gaps change what is asked, never the dates. `/maintenance` lists the ones that won't close.
-- A contested verdict is corrected with `srs.py amend "<Concept>" pass|fail`, on the same study day only. The concept goes back to how it was before the answer and the answer is applied again with the new result; the next day, the answer is final.
+- Retry, off by default (`/config` turns it on): after a wrong answer to an open question, `/quiz` says only that it is wrong and lets you try once more, without hints. Right on that try is a retry: no lapse and no step toward a leech, the interval stays the same (or drops to the days you set, `scheduling.retry.interval`), and the gap opens as on a fail. A wrong answer to a closed question, one whose few possible answers make "wrong" point to the other, is a fail. Retries don't count as passes in the score or in `srs.py stats`.
+- A contested verdict is corrected with `srs.py amend "<Concept>" pass|fail|retry`, on the same study day only. The concept goes back to how it was before the answer and the answer is applied again with the new result; the next day, the answer is final.
 - New content for a concept in review brings it back the next day with a question on the new part. A pass keeps the interval; a fail is a normal lapse.
 - Up to 20 concepts a day: learning, relearning and updated concepts first, then reviews (most overdue first), then new concepts, at most 5 a day and only if there is room.
 - A new concept waits until the next day. The study day starts at 4 a.m., so a late-night session counts as the same day.
@@ -210,7 +211,7 @@ To check retention, run `python3 <plugin folder>/scripts/srs.py stats` in the va
 
 ## Configuration
 
-`/setup` writes `.srs/config.json` in your vault. Use `/config`, or just ask, to change `scheduling.daily_limit`, `scheduling.new_per_day` and `integrate_review`; edit the file by hand for the rest.
+`/setup` writes `.srs/config.json` in your vault. Use `/config`, or just ask, to change `scheduling.daily_limit`, `scheduling.new_per_day`, `scheduling.retry` and `integrate_review`; edit the file by hand for the rest.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -228,6 +229,7 @@ To check retention, run `python3 <plugin folder>/scripts/srs.py stats` in the va
 | `scheduling.algorithm` | `anki` | `anki` or `thirds` |
 | `scheduling.daily_limit` | `20` | Concepts per day, reviews and new concepts together |
 | `scheduling.new_per_day` | `5` | New concepts per day, in the slots reviews leave free. None enter on a day when due reviews exceed the daily limit |
+| `scheduling.retry` | `{"enabled": false, "interval": "same"}` | A second try after a wrong answer to an open question (see [Scheduling](#scheduling)). `interval`: `"same"` keeps the interval after a retry; a number of days sets it, never above the current interval |
 | `scheduling.day_starts_at` | `4` | Hour the study day starts |
 | `scheduling.mature_interval` | `21` | Days of interval from which `srs.py stats` counts a review as mature |
 | `scheduling.anki` | Anki's defaults | Parameters of `anki`, below |
