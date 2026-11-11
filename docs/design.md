@@ -134,7 +134,7 @@ Question rules, editable in `.srs/quiz-rules.md`:
 - It must make sense years later: no author, book or course trivia; definitions that hold beyond the current topic.
 - Asked from the owner page, not from the model's general knowledge. A page too thin for a good question is flagged with `srs.py flag` and reported by `/maintenance`. A concept defined on a page of another subject is flagged too (`srs.py flag "<page>" --misplaced "<Concept>"`), only after you agree, and `/maintenance` lists it with where it belongs; it never moves anything on its own.
 - When an answer is right about the concept but wrong only on a prerequisite that has its own concept, the concept is judged by its own idea and the quiz offers to open a gap on the prerequisite instead.
-- A different angle from the recent questions; aimed at the focus or the gap when there is one.
+- The concept's core idea, not the page's peripheral facts: examples, syntax and lists of parts are there to explain, not to be tested. A detail worth testing becomes its own concept in the index. Questions differ from the recent ones by wording or by applying the idea to a case; they aim at the focus or the gap when there is one.
 - Free recall, never multiple choice: recalling trains memory more than recognizing.
 - Meant to consolidate, not to catch you out.
 - Judged strictly: the core idea present and no conceptual error. Lenient grading stretches intervals for nothing.

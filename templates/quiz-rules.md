@@ -8,7 +8,7 @@ Recall reads this file before every /quiz. Edit it to change how questions are a
 - The answer is direct: no calculation is needed to reach it.
 - It must make sense years from now: no author, book or course trivia, and definitions that still hold outside the current topic.
 - Ask from the concept's owner page, not from general knowledge. When the page can't support a good question, ask what it allows and flag the page.
-- Take a different angle from the recent questions listed for the concept. When the concept has a focus, ask about the new content. When it has a gap, ask about the idea the gap names.
+- Test the concept's core idea: what it is, what it's for, how it differs from its neighbours. To differ from the recent questions, vary the wording or apply the idea to a case; don't move on to peripheral facts of the page (examples, syntax, lists of parts), which are there to explain, not to be tested. When the concept has a focus, ask about the new content. When it has a gap, ask about the idea the gap names.
 - Free recall: never multiple choice, and never a yes/no question that gives the answer away.
 - The goal is to consolidate memory, not to catch the user out.
 
