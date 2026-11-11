@@ -16,6 +16,7 @@ The block above comes from Recall's script. Call the script as `python3 ${CLAUDE
 ## Before you start
 
 - If the block says NOT SET UP, tell the user to run /setup, and stop.
+- If the block says QUIZ OFF, do what it says, and stop.
 - If it reports an INTERRUPTED SESSION, show what was left uncommitted and ask whether to keep or discard it; do what it says, then continue.
 - If there are no candidates, say so and stop.
 
@@ -23,7 +24,7 @@ The block above comes from Recall's script. Call the script as `python3 ${CLAUDE
 
 0. If the block has an "Audit first" section, those pages changed since their last audit, so their index entries may be stale. Before proposing anything:
    - `srs.py begin promote`, then use the Agent tool with the `recall:page-auditor` agent, giving it that section exactly as listed and the absolute path of the index.
-   - Run `srs.py verify "<path>" ...` with the pages that passed; their candidates stay in the list. For each duplicate (C or C?), also run `srs.py unseal "<other page>"`.
+   - Run `srs.py verify "<path>" ...` with the pages that passed; their candidates stay in the list. For each duplicate (C or C?), also run `srs.py unseal "<other page>"`. Notes don't stop a seal: run `srs.py flag "<path>"` for each T note, and show each M note in one line, flagging it with `srs.py flag "<path>" --misplaced "<Concept>" --to "<where it belongs>"` only if the user approves.
    - Leave the candidates of failed pages out of the list. Show each failure in one line and offer the fix, as /maintenance does: edit the index, run `srs.py diff`, and on "ok" run `srs.py rename` or `srs.py remove` for any scheduled concept you renamed or removed, then `srs.py commit -m "promote: fix index of <page>"`. Once fixed, those candidates can join the list. A borderline duplicate (C?) is the user's call.
    - Pages marked "held back" stay out of the list; say in one line that /maintenance handles them.
    - If the user then promotes nothing, still keep the seals: `srs.py commit -m "promote: <N> pages verified"`, then `srs.py end`.

@@ -22,8 +22,9 @@ The block above comes from Recall's script. Call the script as `python3 ${CLAUDE
    - where `/integrate` puts new pages: `folders` (the default; each new page goes in the existing folder whose topic fits best, and the new-pages path is only the fallback) or `flat` (every new page goes in the new-pages path). Suggest what the block suggests: `folders` when the vault already has folders with pages;
    - the heading level that opens an inbox block (default 2; if the inbox already exists, suggest the level its headings use);
    - folders or patterns to exclude (suggest the detected ones). Patterns: `folder/` for a folder, `*.excalidraw.md` for file names anywhere;
-   - the scheduling algorithm, from the list in the block, one line each: `anki` (the default) or `thirds`. Mention that the README's Scheduling section compares them and that it can be changed later in `.srs/config.json`.
-3. Run `srs.py init` with the answers: `--algorithm <name> --language "..." --concept-language "..." --inbox "..." --index "..." --new-pages "..." --folder-map "..." --new-page-placement <folders|flat> --heading-level N`, one `--exclude "..."` per pattern, and `--git-init` only if the folder has no repository and the user agreed to create one.
+   - whether they want the daily quiz (default on): a spaced-repetition quiz on the concepts they choose to remember. Without it, Recall keeps the inbox, the index and the pages in order, and /config turns the quiz on later;
+   - only with the quiz on, the scheduling algorithm, from the list in the block, one line each: `anki` (the default) or `thirds`. Mention that the README's Scheduling section compares them and that it can be changed later in `.srs/config.json`.
+3. Run `srs.py init` with the answers: `--quiz <on|off> --algorithm <name> --language "..." --concept-language "..." --inbox "..." --index "..." --new-pages "..." --folder-map "..." --new-page-placement <folders|flat> --heading-level N`, one `--exclude "..."` per pattern, `--algorithm` only with the quiz on, and `--git-init` only if the folder has no repository and the user agreed to create one.
 4. If it reports a missing git identity, show the two commands it prints and stop; the user runs them and then /setup again.
 5. Continue with the folder map, then indexing. The block above was computed before setup, so run `srs.py context setup` for the folder map section, and get the first indexing batch from `srs.py setup-batch`.
 
@@ -43,7 +44,7 @@ Do this only when the block (or `srs.py context setup`, right after init) has a 
 Nothing enters the review queue during setup. Each round indexes one batch.
 
 1. If the block reports an INTERRUPTED SESSION, resolve it first as it says.
-2. If every page is indexed, say so, suggest /integrate or /promote, and stop.
+2. If every page is indexed, say so, suggest /integrate (and /promote, when the block says `Quiz: on`), and stop.
 3. `srs.py begin setup`.
 4. Use the Agent tool with the `recall:index-drafter` agent. Give it the batch paths (from the block, or from `srs.py setup-batch` after the first round), the concept language, the description limit and the index path.
 5. Append its entries to the index file with Edit. Resolve duplicates: when two pages explain the same concept, keep one owner, preferring a page about the concept over a diary-style page, and remove the concept from the other entry.

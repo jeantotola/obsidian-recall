@@ -15,6 +15,7 @@ The block above comes from Recall's script. Call the script as `python3 ${CLAUDE
 ## Before you start
 
 - If the block says NOT SET UP, tell the user to run /setup, and stop.
+- If the block says QUIZ OFF, do what it says, and stop.
 - If it reports an INTERRUPTED SESSION, show what was left uncommitted and ask whether to keep or discard it; do what it says, then continue.
 - If there is nothing to ask today, say so and when the next review is due, and stop.
 

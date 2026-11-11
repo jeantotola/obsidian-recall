@@ -805,6 +805,82 @@ class ConfigTest(VaultCase):
         self.assertIn("ERROR: Unknown scheduling algorithm", self.srs("context", "maintenance").stdout)
 
 
+class QuizOffTest(VaultCase):
+    """With the quiz off, Recall keeps the inbox, the index and the pages; /quiz and /promote don't run."""
+
+    def config(self):
+        return json.loads((self.vault / ".srs/config.json").read_text(encoding="utf-8"))
+
+    def save(self, config):
+        (self.vault / ".srs/config.json").write_text(json.dumps(config), encoding="utf-8")
+
+    def test_on_by_default_even_without_the_key(self):
+        self.assertIs(self.config()["quiz"], True)
+        config = self.config()
+        del config["quiz"]  # a vault set up before the setting existed
+        self.save(config)
+        self.assertIn("\nQuiz: on\n", self.srs("context", "integrate").stdout)
+
+    def test_init_takes_it_and_still_prepares_the_schedule(self):
+        other = self.tmp / "other"
+        other.mkdir()
+        (other / "a.md").write_text("# A\n")
+        out = self.srs("init", "--git-init", "--quiz", "off", cwd=other).stdout
+        self.assertIn("Quiz: off. /config turns it on.", out)
+        self.assertNotIn("Scheduling algorithm", out)
+        self.assertIs(json.loads((other / ".srs/config.json").read_text())["quiz"], False)
+        for name in ("state.json", "log.csv", "quiz-rules.md"):
+            self.assertTrue((other / ".srs" / name).is_file(), name)
+
+    def test_setup_context_offers_it(self):
+        bare = self.tmp / "bare"
+        bare.mkdir()
+        out = self.srs("context", "setup", cwd=bare).stdout
+        self.assertIn("Quiz (init --quiz on|off; default on)", out)
+        self.assertIn("Scheduling algorithms, asked only with the quiz on", out)
+
+    def test_config_turns_it_off_and_on_and_keeps_the_schedule(self):
+        self.index("## [[Bayes]]\n- Bayes' theorem\n")
+        self.srs("add", "--source", "integrate", "Bayes' theorem")
+        before = (self.vault / ".srs/state.json").read_text()
+        out = self.srs("config", "--quiz", "off").stdout
+        self.assertIn("config: quiz off", out)
+        self.assertIn("The schedule is kept as it is (1 concept)", out)
+        self.assertNotIn("New concepts per day", out)
+        self.assertIn("/integrate review: human", out)
+        self.assertEqual(self.git("log", "-1", "--format=%s").strip(), "config: quiz off")
+        self.assertIs(self.config()["quiz"], False)
+        self.assertEqual((self.vault / ".srs/state.json").read_text(), before)
+        self.assertIn("Nothing changed.", self.srs("config", "--quiz", "off").stdout)
+        out = self.srs("config", "--quiz", "on").stdout
+        self.assertIn("config: quiz on", out)
+        self.assertIn("Quiz: on", out)
+        self.assertIn("New concepts per day", out)
+
+    def test_commands_follow_it(self):
+        self.index("## [[Bayes]]\n- Bayes' theorem\n")
+        self.srs("config", "--quiz", "off")
+        for command in ("quiz", "promote"):
+            out = self.srs("context", command).stdout
+            self.assertIn("QUIZ OFF", out)
+            self.assertNotIn("## Rules", out)
+        out = self.srs("context", "integrate").stdout
+        self.assertIn("\nQuiz: off\n", out)
+        self.assertNotIn("New-concept queue", out)
+        out = self.srs("context", "config").stdout
+        self.assertIn("Quiz: off.", out)
+        self.assertNotIn("Retry after a wrong answer", out)
+        self.assertIn("Recall: configured. Quiz: off.", self.srs("context", "setup").stdout)
+
+    def test_an_unknown_value_is_reported_and_config_fixes_it(self):
+        config = self.config()
+        config["quiz"] = "off"
+        self.save(config)
+        self.assertIn("ERROR: Unknown quiz value 'off'", self.srs("context", "integrate").stdout)
+        self.srs("config", "--quiz", "off")
+        self.assertIs(self.config()["quiz"], False)
+
+
 class InboxTest(VaultCase):
     def ids(self):
         out = self.srs("inbox", "list").stdout.splitlines()[1:]
@@ -1861,6 +1937,18 @@ class WelcomeTest(VaultCase):
         self.add(*self.NAMES)
         self.assertEqual(self.welcome(), "Recall: today 3 questions: 3 new concepts\n  /quiz        take today's quiz")
 
+    def test_quiz_off_shows_only_the_commands_worth_running(self):
+        self.add(*self.NAMES)
+        self.set_config(quiz=False)
+        self.assertSilent(self.run_welcome())
+        self.write("inbox.md", "## Fração\ntext\n")
+        message = json.loads(self.run_welcome().stdout.decode("utf-8"))["systemMessage"]
+        self.assertEqual(message, "\nRecall:\n  /integrate   1 block in the inbox: Fração")
+        (self.vault / ".srs/session.json").write_text("{}", encoding="utf-8")
+        message = json.loads(self.run_welcome().stdout.decode("utf-8"))["systemMessage"]
+        self.assertEqual(message, "\nRecall: interrupted session! Run a Recall command to recover it.\n"
+                                  "  /integrate   1 block in the inbox: Fração")
+
     def test_reviews_count_learning_relearning_updated_and_reviews(self):
         self.add(*self.NAMES)
         self.srs("record", "Eigenvectors", "fail", today=self.DAY)  # learning
@@ -2326,7 +2414,7 @@ class StatsTest(VaultCase):
 
 
 class FlagTest(VaultCase):
-    """/quiz flags thin pages and misplaced concepts; /maintenance reports both."""
+    """/quiz and /maintenance flag thin pages and misplaced concepts; /maintenance reports both."""
 
     def setUp(self):
         super().setUp()
@@ -2339,7 +2427,7 @@ class FlagTest(VaultCase):
         self.srs("flag", "Math/Bayes.md")
         self.assertEqual(self.flags()["thin"], {"Math/Bayes.md": "2026-01-10"})
         self.assertEqual(self.flags()["misplaced"], {})
-        self.assertIn("Pages flagged as thin by /quiz: 1", self.srs("check").stdout)
+        self.assertIn("Pages flagged as thin: 1", self.srs("check").stdout)
         self.srs("unflag", "Math/Bayes.md")
         self.assertEqual(self.flags()["thin"], {})
 
@@ -2350,11 +2438,11 @@ class FlagTest(VaultCase):
                          {"Matrix norm": {"page": "Math/Eigendecomposition.md", "to": "Linear algebra", "day": "2026-01-10"}})
         self.assertEqual(self.flags()["thin"], {})
         report = self.srs("check").stdout
-        self.assertIn("Concepts flagged as misplaced by /quiz: 1", report)
+        self.assertIn("Concepts flagged as misplaced: 1", report)
         self.assertIn("Matrix norm: defined on Math/Eigendecomposition.md, belongs in Linear algebra", report)
         self.srs("unflag", "Math/Eigendecomposition.md", "--misplaced", "Matrix norm")
         self.assertEqual(self.flags()["misplaced"], {})
-        self.assertIn("Concepts flagged as misplaced by /quiz: none", self.srs("check").stdout)
+        self.assertIn("Concepts flagged as misplaced: none", self.srs("check").stdout)
 
     def test_misplaced_flag_without_a_destination(self):
         self.srs("flag", "Math/Eigendecomposition.md", "--misplaced", "Matrix norm")
@@ -2375,7 +2463,7 @@ class FlagTest(VaultCase):
         state = json.loads(path.read_text(encoding="utf-8"))
         state["flags"] = {"thin": {"Math/Bayes.md": "2026-01-01"}}
         path.write_text(json.dumps(state), encoding="utf-8")
-        self.assertIn("Concepts flagged as misplaced by /quiz: none", self.srs("check").stdout)
+        self.assertIn("Concepts flagged as misplaced: none", self.srs("check").stdout)
         self.srs("flag", "Math/Eigendecomposition.md", "--misplaced", "Matrix norm")
         self.assertEqual(sorted(self.flags()["thin"]), ["Math/Bayes.md"])
 
@@ -3130,6 +3218,33 @@ class ReviewPromptTest(VaultCase):
         self.assertIn("FIRST USE", skill)
         self.assertIn("Reminder due", skill)
         self.assertIn("srs.py config --remind-later", skill)
+
+
+class QuizOffDocsTest(unittest.TestCase):
+    """The commands follow the quiz setting, and the page auditor notes what /quiz used to find alone."""
+
+    def test_skills_follow_the_quiz_setting(self):
+        for name in ("quiz", "promote"):
+            self.assertIn("If the block says QUIZ OFF, do what it says, and stop.",
+                          (ROOT / f"skills/{name}/SKILL.md").read_text())
+        self.assertIn("With the quiz off, skip steps 4 and 5", (ROOT / "skills/integrate/SKILL.md").read_text())
+        setup = (ROOT / "skills/setup/SKILL.md").read_text()
+        self.assertIn("--quiz <on|off>", setup)
+        self.assertIn("`--algorithm` only with the quiz on", setup)
+        self.assertIn("srs.py config --quiz on", (ROOT / "skills/config/SKILL.md").read_text())
+
+    def test_the_page_auditor_notes_thin_pages_and_misplaced_concepts(self):
+        text = (ROOT / "agents/page-auditor.md").read_text()
+        front = text.split("---")[1]
+        self.assertIn("model: haiku", front)
+        self.assertIn("tools: Read, Glob, Grep\n", front)
+        self.assertIn("NOTE <path> — T:", text)
+        self.assertIn("NOTE <path> — M:", text)
+        self.assertIn("a page with notes still passes", text)
+        maintenance = (ROOT / "skills/maintenance/SKILL.md").read_text()
+        self.assertIn('for each T note, run `srs.py flag "<path>"`', maintenance)
+        self.assertIn("an M note is flagged only on the user's approval", maintenance)
+        self.assertIn("run `srs.py flag \"<path>\"` for each T note", (ROOT / "skills/promote/SKILL.md").read_text())
 
 
 class ReviewAgentsTest(unittest.TestCase):

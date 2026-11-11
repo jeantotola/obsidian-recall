@@ -98,6 +98,8 @@ DEFAULT_CONFIG = {
     "paths": {"inbox": "inbox.md", "index": "index.md", "new_pages": "wiki", "folder_map": "folders.md"},
     "new_page_placement": "folders",
     "inbox_heading_level": 2,
+    # The daily quiz. Off: no /quiz or /promote, and /integrate queues nothing; the schedule is kept as it is.
+    "quiz": True,
     "integrate_review": "human",  # human: the user approves each diff; agent: judge agents review it
     # The one-time question and the reminders to try the agent review while the mode is human.
     # asked, asked_head and wait_days are state kept by `srs.py config`; the rest are limits.
@@ -287,6 +289,13 @@ class Vault:
         if value not in REVIEW_MODES:
             raise SrsError(f"Unknown integrate_review '{value}'. Edit .srs/config.json to use one of: "
                            + ", ".join(REVIEW_MODES) + ".")
+        return value
+
+    @property
+    def quiz(self) -> bool:
+        value = self.config["quiz"]
+        if not isinstance(value, bool):
+            raise SrsError(f"Unknown quiz value '{value}'. Edit .srs/config.json to use true or false.")
         return value
 
     @property
@@ -1513,8 +1522,8 @@ def format_checks(v: Vault, report: dict, only=None) -> list:
         ("unindexed", "Pages not in the index (index them with /setup)", lambda x: x),
         ("unverified", "Indexed pages without a valid seal", lambda p: p.path),
         ("stale_seals", "Stale seals (the file is gone or is no longer a page; /maintenance removes them)", lambda x: x),
-        ("thin", "Pages flagged as thin by /quiz", lambda x: f"{x[0]} (flagged {x[1]})"),
-        ("misplaced", "Concepts flagged as misplaced by /quiz", misplaced_line),
+        ("thin", "Pages flagged as thin", lambda x: f"{x[0]} (flagged {x[1]})"),
+        ("misplaced", "Concepts flagged as misplaced", misplaced_line),
         ("leeches", f"Leeches ({v.leech_at}+ lapses)", lambda x: f"{x[0]} ({x[1]} lapses)"),
         ("stuck_gaps", f"Gaps that won't close ({GAP_STUCK_FAILS}+ fails)", lambda x: f"{x[0]}: {x[1]} ({x[2]} fails)"),
         ("unmapped_folders", f"Folders with pages but no row in the folder map ({v.folder_map_rel})", lambda x: x),
@@ -1576,6 +1585,8 @@ def cmd_init(args):
         print("Committed the vault's current content first (vault: snapshot before Recall setup).")
 
     config = json.loads(json.dumps(DEFAULT_CONFIG))
+    if args.quiz:
+        config["quiz"] = args.quiz == "on"
     if args.algorithm:
         config["scheduling"]["algorithm"] = args.algorithm
     if args.language:
@@ -1618,7 +1629,10 @@ def cmd_init(args):
     if ensure_gitignore(root):
         paths.append(".gitignore")
     sha = repo.commit(paths, "setup: initialize Recall")
-    print(f"Scheduling algorithm: {config['scheduling']['algorithm']}.")
+    if config["quiz"]:
+        print(f"Quiz: on. Scheduling algorithm: {config['scheduling']['algorithm']}.")
+    else:
+        print("Quiz: off. /config turns it on.")
     print(f"New page placement: {config['new_page_placement']}.")
     print(f"Recall is set up. Committed {sha}: setup: initialize Recall.")
 
@@ -2152,6 +2166,23 @@ def review_mode_line(v: Vault) -> str:
     return f"/integrate review: {mode} ({what})."
 
 
+def quiz_line(v: Vault) -> str:
+    if v.quiz:
+        return "Quiz: on (/quiz asks the concepts due each day)."
+    kept = len(load_state(v)["concepts"])
+    return ("Quiz: off. /quiz and /promote don't run, and /integrate doesn't ask which concepts to review."
+            + (f" The schedule is kept as it is ({plural(kept, 'concept')}) until the quiz is turned back on."
+               if kept else ""))
+
+
+def settings_lines(v: Vault) -> list:
+    """What `srs.py config` and /config show: the quiz, with its pace and retry when it is on, and the /integrate review."""
+    lines = [quiz_line(v)]
+    if v.quiz:
+        lines += pace_lines(v) + [retry_line(v)]
+    return lines + [review_mode_line(v)]
+
+
 def integrate_commits_since(v: Vault, sha) -> int:
     """Blocks integrated since a commit: `integrate:` commits, not the `integrate: queue` ones."""
     if not sha:
@@ -2229,7 +2260,10 @@ def cmd_config(args):
                      if {"enabled": enabled, "interval": interval}[k] != value}
     mode, current = args.integrate_review, v.config.get("integrate_review")
     prompt = v.config["integrate_review_prompt"]
-    summary = [f"{k} {v.sched[k]} -> {value}" for k, value in changes.items()]
+    quiz_wanted = None if args.quiz is None else args.quiz == "on"
+    quiz_change = quiz_wanted is not None and v.config.get("quiz") is not quiz_wanted
+    summary = [f"quiz {args.quiz}"] if quiz_change else []
+    summary += [f"{k} {v.sched[k]} -> {value}" for k, value in changes.items()]
     summary += [f"retry {'on' if value else 'off'}" if k == "enabled" else f"retry interval {interval} -> {value}"
                 for k, value in retry_changes.items()]
     review_raw = {}  # what goes into the file for the integrate review settings
@@ -2247,12 +2281,15 @@ def cmd_config(args):
         if not args.remind_later:
             review_raw["prompt"] = {"asked": v.today.isoformat(), "asked_head": head_sha(v),
                                     "wait_days": int(prompt["first_days"])}
-    if (wanted or retry_wanted or mode is not None or args.remind_later) and not summary:
+    if (wanted or retry_wanted or mode is not None or args.remind_later or quiz_wanted is not None) and not summary:
         print("Nothing changed.")
     if summary:
         repo = require_repo(v)
         path = v.srs / "config.json"
         raw = read_json(path, {})  # the file as written: load_config's defaults stay out of it
+        if quiz_change:
+            raw["quiz"] = quiz_wanted
+            v.config["quiz"] = quiz_wanted
         for key, value in changes.items():
             raw.setdefault("scheduling", {})[key] = value
         if retry_changes:
@@ -2270,7 +2307,7 @@ def cmd_config(args):
         sha = repo.commit([f"{SRS_DIR}/config.json"], f"config: {text}")
         v.sched.update(changes)
         print(f"Committed {sha}: config: {text}.")
-    print("\n".join(pace_lines(v) + [retry_line(v), review_mode_line(v)]))
+    print("\n".join(settings_lines(v)))
 
 
 def pass_rate(rows: list) -> float:
@@ -2584,18 +2621,36 @@ def welcome_maintenance(v: Vault, state: dict, words: dict):
 
 
 def welcome_message(v: Vault) -> str:
-    """The status shown when a session starts. Reads the vault's files only: no git, no writes."""
+    """The status shown when a session starts. Reads the vault's files only: no git, no writes.
+    With the quiz off there is no day's status: only the commands worth running, or nothing at all."""
     words = welcome_strings(v.config.get("language"))
-
     state = load_state(v)
+    lines = []
+    if session_path(v).exists():
+        lines.append(words["interrupted"])
+    if v.quiz:
+        lines += welcome_quiz(v, state, words)
+    inbox = welcome_inbox(v, words)
+    if inbox:
+        lines.append(f"  {'/integrate':<13}{inbox}")
+    try:
+        maintenance = welcome_maintenance(v, state, words)
+    except Exception:  # a broken index or an unreadable page is /maintenance's to report, not a reason to lose the rest
+        maintenance = None
+    if maintenance:
+        lines.append(f"  {'/maintenance':<13}{maintenance}")
+    if lines and not lines[0].startswith("Recall:"):
+        lines.insert(0, "Recall:")
+    return "\n".join(lines)
+
+
+def welcome_quiz(v: Vault, state: dict, words: dict) -> list:
+    """The day's status line, and the /quiz line when there is something to ask."""
     neighbors = vault_neighbors(v)
     items, info = daily_list(state, v.sched, v.today, neighbors)
     t = v.today.isoformat()
     rows = [r for r in read_log(v) if r["day"] == t]
-
     lines = []
-    if session_path(v).exists():
-        lines.append(words["interrupted"])
     if items:
         reviews = info["learning"] + info["reviews"]
         parts = ", ".join(welcome_count(words, n, w) for n, w in ((reviews, "review"), (info["new"], "new")) if n)
@@ -2616,16 +2671,7 @@ def welcome_message(v: Vault) -> str:
             delta = (nxt - v.today).days
             when = words["tomorrow"] if delta == 1 else words["in_days"].format(n=delta)
             lines.append(words["next"].format(when=when))
-    inbox = welcome_inbox(v, words)
-    if inbox:
-        lines.append(f"  {'/integrate':<13}{inbox}")
-    try:
-        maintenance = welcome_maintenance(v, state, words)
-    except Exception:  # a broken index or an unreadable page is /maintenance's to report, not a reason to lose the rest
-        maintenance = None
-    if maintenance:
-        lines.append(f"  {'/maintenance':<13}{maintenance}")
-    return "\n".join(lines)
+    return lines
 
 
 def read_hook_json() -> dict:
@@ -2650,8 +2696,10 @@ def cmd_welcome(args):
     """SessionStart hook. Whatever goes wrong must not reach the session: no output, exit 0."""
     try:
         args.vault = args.vault or hook_folder()
-        # The leading newline keeps the first line apart from the label the host prints before it.
-        print(json.dumps({"systemMessage": "\n" + welcome_message(open_vault(args))}))
+        message = welcome_message(open_vault(args))
+        if message:  # with the quiz off and nothing waiting, there is nothing to say
+            # The leading newline keeps the first line apart from the label the host prints before it.
+            print(json.dumps({"systemMessage": "\n" + message}))
     except Exception:
         pass
 
@@ -3391,7 +3439,10 @@ def context_setup(args) -> list:
         out.append("  Suggested: " + (f"folders (the vault has pages in folders such as {', '.join(themed[:3])})"
                                        if themed else "folders; with no folders yet, new pages go in the new-pages path"
                                        " until the vault has some"))
-        out.append(f"Scheduling algorithms (init --algorithm; default {DEFAULT_CONFIG['scheduling']['algorithm']}):")
+        out.append("Quiz (init --quiz on|off; default on): a daily spaced-repetition quiz on the concepts the user "
+                   "chooses to remember. Off: /integrate, the index and /maintenance only. /config changes it later.")
+        out.append("Scheduling algorithms, asked only with the quiz on "
+                   f"(init --algorithm; default {DEFAULT_CONFIG['scheduling']['algorithm']}):")
         out += [f"  {key}: {entry.summary}" for key, entry in ALGORITHMS.items()]
         out.append("")
         out.append("## Rules")
@@ -3401,7 +3452,7 @@ def context_setup(args) -> list:
     config = load_config(root)
     v = Vault(root=root, config=config, today=compute_today(config, args.today))
     out = context_header(v, "setup")
-    out.append("Recall: configured.")
+    out.append(f"Recall: configured. Quiz: {'on' if v.quiz else 'off'}.")
     out += session_lines(v)
     idx, _ = load_index(v)
     indexed = {p.path for p in idx.pages if p.path}
@@ -3487,7 +3538,11 @@ def context_integrate(v: Vault, extra: list) -> list:
             source = arg.strip()
     out = context_header(v, "integrate")
     out += session_lines(v)
-    out.append(queue_summary(state, v))
+    if v.quiz:
+        out.append("Quiz: on")
+        out.append(queue_summary(state, v))
+    else:
+        out.append("Quiz: off")
     out.append(f"Review mode: {v.integrate_review}")
     out += review_prompt_lines(v)
     rel, path = block_source(v, source)
@@ -3545,10 +3600,16 @@ def context_integrate(v: Vault, extra: list) -> list:
     return out
 
 
+QUIZ_OFF = ("QUIZ OFF in this vault. Tell the user, in one line, that /config turns it on and that the schedule "
+            "is kept as it was; then stop.")
+
+
 def context_quiz(v: Vault) -> list:
+    out = context_header(v, "quiz")
+    if not v.quiz:
+        return out + [QUIZ_OFF]
     state = load_state(v)
     idx, _ = load_index(v)
-    out = context_header(v, "quiz")
     out += session_lines(v)
     out.append("")
     out.append("## Today's list")
@@ -3583,10 +3644,12 @@ def recent_integrated_pages(v: Vault, window: int = 30) -> list:
 
 
 def context_promote(v: Vault, extra: list) -> list:
+    out = context_header(v, "promote")
+    if not v.quiz:
+        return out + [QUIZ_OFF]
     state = load_state(v)
     idx, _ = load_index(v)
     query = " ".join(a for a in extra if a.strip()).strip()
-    out = context_header(v, "promote")
     out += session_lines(v)
     out.append(queue_summary(state, v))
     candidates = defaultdict(list)
@@ -3658,10 +3721,8 @@ def context_config(v: Vault) -> list:
     out = context_header(v, "config")
     out += session_lines(v)
     out.append("")
-    out.append("## Current pace")
-    out += pace_lines(v)
-    out.append(retry_line(v))
-    out.append(review_mode_line(v))
+    out.append("## Current settings")
+    out += settings_lines(v)
     out.append("")
     out.append("## Rules")
     out.append(rules_text())
@@ -3737,6 +3798,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("version", help="print the version").set_defaults(func=cmd_version)
 
     p = sub.add_parser("init", help="set up Recall in a vault")
+    p.add_argument("--quiz", choices=["on", "off"], help="the daily quiz (default: on)")
     p.add_argument("--algorithm", choices=list(ALGORITHMS), help="scheduling algorithm (default: anki)")
     p.add_argument("--language")
     p.add_argument("--concept-language")
@@ -3813,6 +3875,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_unflag)
     sub.add_parser("stats", help="retention, counts and queue").set_defaults(func=cmd_stats)
     p = sub.add_parser("config", help="show or change the daily pace (commits the change itself)")
+    p.add_argument("--quiz", choices=["on", "off"], help="turn the daily quiz on or off (the schedule is kept)")
     p.add_argument("--new-per-day", type=int, help="new concepts per day (0 pauses them)")
     p.add_argument("--daily-limit", type=int, help="concepts per day, reviews and new together")
     p.add_argument("--integrate-review", choices=REVIEW_MODES, help="who reviews /integrate: you (human) or judge agents (agent)")

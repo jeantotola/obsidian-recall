@@ -2,7 +2,7 @@
 
 This document holds the full rules. The [README](../README.md) covers installation and daily use.
 
-Recall turns an Obsidian vault into a study system with three moving parts: an inbox you write in, an index of the concepts each page explains, and a spaced-repetition schedule over the concepts you choose to remember. Six commands drive it. The model writes, asks and judges; a deterministic script keeps the state, does the arithmetic and runs git; you approve.
+Recall turns an Obsidian vault into a study system with three moving parts: an inbox you write in, an index of the concepts each page explains, and a spaced-repetition schedule over the concepts you choose to remember. The schedule and its daily quiz are optional (see [Without the quiz](#without-the-quiz)). Six commands drive it. The model writes, asks and judges; a deterministic script keeps the state, does the arithmetic and runs git; you approve.
 
 ## Principles
 
@@ -59,6 +59,8 @@ Each block has an id derived from its text, so its id changes if you edit it. `s
    - concepts that were only in the index: promote, or not;
    - concepts already scheduled that received new content are updated automatically.
 7. Your answer is applied in one last commit (`integrate: queue N concepts`), and the session closes.
+
+With the quiz off, steps 6 and 7 are skipped: the session closes after the last block.
 
 ### Agent review
 
@@ -140,6 +142,17 @@ Question rules, editable in `.srs/quiz-rules.md`:
 - Judged strictly: the core idea present and no conceptual error. Lenient grading stretches intervals for nothing.
 - Terse answers are fine: the idea is judged, not the prose. When a terse answer could be a guess, Claude asks one short follow-up instead of failing it.
 
+## Without the quiz
+
+The `quiz` key in `.srs/config.json` (default `true`) turns the quiz off. `/setup` asks about it, and `srs.py config --quiz on|off`, or `/config`, changes it later; a vault set up before the key existed has the quiz on.
+
+- `/integrate` still plans, writes and commits every block, and keeps the index. It skips the review list at the end, so nothing is queued or updated.
+- `/quiz` and `/promote` say the quiz is off and stop. `/setup` doesn't ask for a scheduling algorithm.
+- The welcome message has no day's status and no `/quiz` line: the `/integrate` and `/maintenance` lines follow a bare "Recall:" line, and when neither applies the hook prints nothing.
+- The schedule, the log and the quiz rules stay in `.srs/` as they were. Turning the quiz back on resumes the schedule where it stopped: concepts that came due meanwhile are asked as late reviews, within the daily limit.
+
+**What the quiz detects.** The quiz tests the notes as well as the memory, and its findings are of two kinds. Some need only a reading of the page: a page too thin to ask about one of its concepts, or a concept defined on a page of another subject. `/quiz` finds them while reading a page to ask a question, but only on the pages of the concepts that are due, so the page auditor of `/maintenance` checks both on every page it audits, with the quiz on or off (see [/maintenance](#maintenance)). The others come only from answers: a leech, or a gap that won't close, shows that a page doesn't work for you. Without the quiz there is no such evidence. An auditor's note is a model's reading of the page; a leech is a record of what happened when you tried to remember.
+
 ## Existing material and /promote
 
 `/setup` puts all existing material in the index only. It reaches the schedule gradually, always within the daily limit for new concepts and after the concepts from `/integrate`:
@@ -156,20 +169,21 @@ Diary-style files (entries by date rather than by concept) are indexed like any 
 
 ## /maintenance
 
-1. `srs.py check` runs the deterministic checks on indexed pages: pages over the size limit (6,000 characters by default), concept names used on more than one page, descriptions over the limit, index links that don't resolve, index lines that can't be parsed, orphans (scheduled concepts missing from the index), pages that aren't in the index, pages without a valid seal, stale seals (files that are gone or are no longer pages), pages flagged as thin, and leeches.
-2. A Haiku subagent with read-only tools audits up to 20 unsealed pages per run. For each page it judges: (A) every listed concept is explained on the page; (B) the page doesn't explain an important concept missing from its entry and not owned elsewhere; (C) none of its concepts duplicates another page's concept under a different name. An applied version of a general idea (a tool's take on a theory) passes when it adds a mechanism of its own; a true duplicate fails with the page that keeps it; a borderline case fails as C? and the report offers the user both fixes.
-3. Pages that pass get a seal from `srs.py verify`, which refuses pages over the size limit or with names used elsewhere. Before the audit, `srs.py prune-seals` removes the stale seals, always and without asking, inside the session. The count goes in the commit message and the report.
-4. The report lists failures with reasons, leeches, thin pages and unindexed pages.
-5. Nothing else is fixed automatically. Splitting a page, merging concepts or renaming goes through the main agent, as an edit you approve by diff.
-6. When the batch is empty and no seal was removed, the session ends without a commit. `srs.py commit` with nothing to commit prints "Nothing to commit." and exits 0.
+1. `srs.py check` runs the deterministic checks on indexed pages: pages over the size limit (6,000 characters by default), concept names used on more than one page, descriptions over the limit, index links that don't resolve, index lines that can't be parsed, orphans (scheduled concepts missing from the index), pages that aren't in the index, pages without a valid seal, stale seals (files that are gone or are no longer pages), pages flagged as thin, concepts flagged as misplaced, and leeches.
+2. A Haiku subagent with read-only tools audits up to 20 unsealed pages per run. For each page it judges: (A) every listed concept is explained on the page; (B) the page doesn't explain an important concept missing from its entry and not owned elsewhere; (C) none of its concepts duplicates another page's concept under a different name. An applied version of a general idea (a tool's take on a theory) passes when it adds a mechanism of its own; a true duplicate fails with the page that keeps it; a borderline case fails as C? and the report offers the user both fixes. It also notes, without failing the page, two things `/quiz` would find while asking: (T) a concept the page explains too thinly for one question about its core idea, with its answer, to come from the page alone; and (M) a concept that belongs on the page of its own subject, by the test `/integrate` uses when it plans.
+3. A T note becomes a thin flag (`srs.py flag`); an M note becomes a misplaced flag only if you approve it. Notes don't hold back the seal, so a note you reject doesn't come back until the page changes, and the flags keep the rest until you fix them.
+4. Pages that pass get a seal from `srs.py verify`, which refuses pages over the size limit or with names used elsewhere. Before the audit, `srs.py prune-seals` removes the stale seals, always and without asking, inside the session. The count goes in the commit message and the report.
+5. The report lists failures with reasons, leeches, thin pages, misplaced concepts and unindexed pages.
+6. Nothing else is fixed automatically. Splitting a page, merging concepts or renaming goes through the main agent, as an edit you approve by diff.
+7. When the batch is empty and no seal was removed, the session ends without a commit. `srs.py commit` with nothing to commit prints "Nothing to commit." and exits 0.
 
-**Seals are hashes.** A seal stores the git blob hash of the page and a hash of its index entry. Any change to either, through Recall or by hand in Obsidian, breaks the seal without anyone having to remember to remove it. The global duplicate check (criterion C) can still skip sealed pages safely: every new duplicate enters through a changed page, which has already lost its seal. When a duplicate is found, both pages stay unsealed until it is fixed. A seal outlives its page when the page is deleted, renamed, moved or excluded; `srs.py check` reports those entries and `srs.py prune-seals` removes them.
+**Seals are hashes.** A seal stores the git blob hash of the page and a hash of its index entry. Any change to either, through Recall or by hand in Obsidian, breaks the seal without anyone having to remember to remove it. The global duplicate check (criterion C) can still skip sealed pages safely: every new duplicate enters through a changed page, which has already lost its seal. When a duplicate is found, both pages stay unsealed until it is fixed. A seal doesn't record the criteria it was granted under: when the auditor gains a criterion, a sealed page meets it only once it changes or loses its seal. A seal outlives its page when the page is deleted, renamed, moved or excluded; `srs.py check` reports those entries and `srs.py prune-seals` removes them.
 
 Leeches are where the review and the vault meet: a concept that keeps failing points to a page to split or rewrite.
 
 ## /setup
 
-On a vault without Recall, `/setup` asks for the conversation language, the concept language, the paths, where new pages go (`folders` or `flat`), the heading level of inbox blocks, the exclusions, suggesting folders it detects (templates, daily notes, Excalidraw drawings), and the scheduling algorithm. It then runs `srs.py init`, which creates the git repository if needed (after asking), commits the vault's current content, writes `.srs/`, creates the inbox and the index if missing, completes `.gitignore`, and commits.
+On a vault without Recall, `/setup` asks for the conversation language, the concept language, the paths, where new pages go (`folders` or `flat`), the heading level of inbox blocks, the exclusions, suggesting folders it detects (templates, daily notes, Excalidraw drawings), whether to turn on the daily quiz, and, with the quiz on, the scheduling algorithm. It then runs `srs.py init`, which creates the git repository if needed (after asking), commits the vault's current content, writes `.srs/`, creates the inbox and the index if missing, completes `.gitignore`, and commits.
 
 Each later run indexes one batch of pages (20 by default) with a Haiku subagent that only reads. The main agent merges the drafted entries into the index, resolving duplicates by choosing one owner (preferring a page about the concept over a diary-style page), and you approve the batch by diff. Nothing enters the schedule during setup, and every page starts unsealed. `/maintenance` reports pages created later by hand, and `/setup` indexes them.
 
@@ -200,7 +214,7 @@ Three hooks are registered in `hooks/hooks.json`: the guard, the welcome message
 
 **The welcome message.** A `SessionStart` hook with the matcher `startup` runs `srs.py welcome`, so it fires on a new session and not on resume, clear or compact. The command prints JSON with a `systemMessage`, which is shown to you directly: the model is not involved, so it costs no tokens. It took about 0.4 seconds on a vault of about 150 pages on WSL's `/mnt/c`, nearly all of it spent checking seals.
 
-- Lines, showing only what applies: an interrupted session first, detected by `.srs/session.json` existing, with the advice to run a Recall command; then the day's status; then `/quiz` if there is something to ask; then `/integrate` if the inbox has blocks, with the first three titles, newest first as `/integrate` takes them, and `+N` for the rest, followed by how many blocks wait for supervision when the agent review has set some aside; then `/maintenance` if it is worth running.
+- Lines, showing only what applies: an interrupted session first, detected by `.srs/session.json` existing, with the advice to run a Recall command; then the day's status; then `/quiz` if there is something to ask; then `/integrate` if the inbox has blocks, with the first three titles, newest first as `/integrate` takes them, and `+N` for the rest, followed by how many blocks wait for supervision when the agent review has set some aside; then `/maintenance` if it is worth running. With the quiz off there is no day's status and no `/quiz` line; the other lines follow a bare "Recall:" line, and with none of them the hook prints nothing.
 - Any edit breaks a page's seal, so a `/maintenance` line for every unsealed page would soon go unread. It appears with 5 or more indexed pages without a valid seal, with any such page 14 days after the last check, or with a gap that won't close or a leech. It tells what changed rather than only when the last run was, because a date alone doesn't say whether there is anything to do. The last check is the newest seal: the git log can't tell, since other commits use the `maintenance:` prefix. Comparing file dates first saved almost nothing, so every indexed page is hashed. If this part fails, the rest of the message is still shown.
 - The day's status comes from `daily_list` and the log. With questions to ask and no answer today, it gives the total, split into reviews (learning, relearning, updated and review concepts) and new concepts, leaving out a zero. After some answers it gives what is left. With nothing left to ask, it gives the day's score, or without answers today, when the next quiz is, from `next_due`, which runs the real daily list for the coming days. When the pace lets nothing through, such as a queue of new concepts with `new_per_day` at 0, it says so instead of promising a date.
 - It reads the vault's files and nothing else: no writes, and no git, which is slow on some filesystems.
@@ -225,6 +239,7 @@ Three hooks are registered in `hooks/hooks.json`: the guard, the welcome message
 ## To revisit
 
 - **The diff mechanism.** The git diff is version one; if `/integrate` feels heavy, it can change. The agent review is the first change. After a month of using it, check from the git log how many blocks go to supervision and why, whether the concept judge earns its Sonnet cost, and whether the judges' false FAILs (the diff judge's first prompt failed V on a block with nothing of the writer's own) are gone.
+- **The auditor's notes.** Compare the page auditor's T and M notes with the flags `/quiz` raises on the same pages. If Haiku misses what the quiz finds, or notes what you reject, give the notes to a stronger model or drop them.
 - **Algorithm parameters, limits and leech thresholds.** Calibrate with `srs.py stats` after a month of use.
 - **Gaps.** After a month of use, check the pass rate on gap questions and how many gaps won't close, and adjust the 3 days and the 3 fails. If failed ideas keep being ones never asked before, reconsider how much coverage matters.
 - **FSRS.** Compare it with the built-in algorithms after a few months, using the log.

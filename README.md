@@ -2,7 +2,7 @@
 
 **A git-native study system for Obsidian.**
 
-You write what you learn in one inbox page. At the end of a study session, `/integrate` moves it into your vault's pages, block by block, and shows each change as a git diff for you to approve. When the session changed the index, the diff starts with warnings about the lines it added or altered: a description over the limit, a repeated concept name, a link that doesn't resolve or a line that can't be read. They warn; they don't block the commit. An index records the concepts each page explains, and `/quiz` asks you up to 20 questions a day on those concepts, scheduled by spaced repetition (Anki's classic algorithm by default, and every number adjustable). If you prefer, a config key lets judge agents check each block instead, once you have approved the plan, and only the blocks they don't clear wait for you ([Agent review](#agent-review)). A small Python script does the scheduling and all the git work; Claude writes, asks and judges; you approve.
+You write what you learn in one inbox page. At the end of a study session, `/integrate` moves it into your vault's pages, block by block, and shows each change as a git diff for you to approve. When the session changed the index, the diff starts with warnings about the lines it added or altered: a description over the limit, a repeated concept name, a link that doesn't resolve or a line that can't be read. They warn; they don't block the commit. An index records the concepts each page explains, and `/quiz` asks you up to 20 questions a day on those concepts, scheduled by spaced repetition (Anki's classic algorithm by default, and every number adjustable). The quiz is optional: without it, Recall still keeps the inbox, the index and your pages in order ([Without the quiz](#without-the-quiz)). If you prefer, a config key lets judge agents check each block instead, once you have approved the plan, and only the blocks they don't clear wait for you ([Agent review](#agent-review)). A small Python script does the scheduling and all the git work; Claude writes, asks and judges; you approve.
 
 - **Your words stay yours.** Claude moves and links what you wrote, and marks anything it adds.
 - **Git is the backbone.** Each operation is one commit, so `git log` reads like a study journal and `git revert` undoes.
@@ -14,14 +14,14 @@ You write what you learn in one inbox page. At the end of a study session, `/int
 flowchart LR
     you([You]) -- write --> inbox[inbox.md]
     inbox -- "/integrate: git diff, your ok" --> pages[Pages and index.md]
-    pages -- "concepts you choose" --> schedule[(Review schedule)]
-    schedule -- "/quiz, daily" --> you
+    pages -. "concepts you choose" .-> schedule[(Review schedule)]
+    schedule -. "/quiz, daily (optional)" .-> you
 ```
 
 - **Inbox.** One page you write in every day, one block per subject.
 - **Index.** For each page, the concepts that page explains. It is how Claude finds where new notes belong without reading the whole vault, and the list of what can be quizzed.
 - **Review schedule.** The concepts you chose to remember, each with the date from which it is due. The script computes every date; the model never does.
-- **Seals.** `/maintenance` checks pages against the index and seals the ones that pass. Any change to a page breaks its seal, and the seal of a page that was deleted, renamed or excluded is removed automatically.
+- **Seals.** `/maintenance` checks pages against the index and seals the ones that pass. It also notes pages too thin to ask about and concepts on the wrong page, without holding back the seal. Any change to a page breaks its seal, and the seal of a page that was deleted, renamed or excluded is removed automatically.
 
 ## Requirements
 
@@ -47,18 +47,18 @@ Choose the **project** scope, so Recall's commands and hook load only in this va
 /setup
 ```
 
-`/setup` asks a few questions (the language to talk to you in, paths, exclusions, the scheduling algorithm), creates `.srs/`, the inbox and the index, and turns the vault into a git repository if it isn't one. Run `/setup` again until all your existing pages are indexed: each round indexes 20 pages with a small model, and you approve it by diff. Nothing enters the review schedule during setup.
+`/setup` asks a few questions (the language to talk to you in, paths, exclusions, whether you want the daily quiz and, if so, its scheduling algorithm), creates `.srs/`, the inbox and the index, and turns the vault into a git repository if it isn't one. Run `/setup` again until all your existing pages are indexed: each round indexes 20 pages with a small model, and you approve it by diff. Nothing enters the review schedule during setup.
 
 ## Quick manual
 
 | Command | When | What it does |
 | --- | --- | --- |
 | `/integrate [n \| file]` | After studying | Plans where the inbox blocks go, then moves them into your pages with one diff and one commit per block (or, with [agent review](#agent-review), one commit per block the judges clear). Ends with one question: which concepts go into review. |
-| `/quiz` | Every day | Asks about the concepts that are due. Answer in your own words. `/config` sets how many questions a day. |
-| `/promote [page or topic]` | When you have time | Adds concepts from notes you already have to the quiz, such as what you wrote before Recall. |
+| `/quiz` | Every day, with the quiz on | Asks about the concepts that are due. Answer in your own words. `/config` sets how many questions a day. |
+| `/promote [page or topic]` | When you have time, with the quiz on | Adds concepts from notes you already have to the quiz, such as what you wrote before Recall. |
 | `/maintenance` | Now and then | Checks that your pages match Recall's list of concepts, and reports what needs fixing. |
 | `/setup` | Once, then until your notes are covered | Configures the vault and lists the concepts your existing pages explain. |
-| `/config [change]` | When your pace changes | Shows or changes how many concepts you get per day, and whether `/integrate` is reviewed by you or by judge agents. You can also just ask for it in the conversation. |
+| `/config [change]` | When your pace changes | Shows or changes whether the quiz is on, how many concepts you get per day, and whether `/integrate` is reviewed by you or by judge agents. You can also just ask for it in the conversation. |
 
 Commands work by their short name when nothing else uses it; otherwise type `/recall:quiz` and so on. When you open a new session in the vault, Recall tells you which of them today calls for ([Welcome message](#welcome-message)).
 
@@ -74,6 +74,12 @@ Commands work by their short name when nothing else uses it; otherwise type `/re
 3. **Tomorrow, run `/quiz`.** One question per due concept, asked from its page. When you miss something, Claude notes the idea you missed. It comes back at the end of the session and in that concept's next questions, until you get it right at least 3 days later.
 
 `/integrate 3` processes only the three newest blocks; `/integrate path/to/old-diary.md` integrates another file block by block, the same way.
+
+### Without the quiz
+
+With `quiz` set to false (`/setup` asks; `/config` changes it), Recall keeps the inbox, the index and your pages in order and asks you nothing. `/integrate` skips the final list of concepts for the quiz, `/quiz` and `/promote` only say that the quiz is off, and the welcome message shows only the `/integrate` and `/maintenance` lines. The schedule stays as it was, and turning the quiz back on resumes it.
+
+The quiz also tests your notes, and part of what it finds needs only a reading of the page: a page too thin to ask about one of its concepts, or a concept defined on the page of another subject. `/maintenance` checks both, with the quiz on or off. What only your answers can show, a concept you keep failing or an idea you keep missing, doesn't exist without the quiz.
 
 ### Agent review
 
@@ -97,7 +103,7 @@ Recall: today 22 questions: 15 reviews, 7 new concepts
   /maintenance 6 pages changed since the last check (12 days ago)
 ```
 
-It shows only what matters: what is left if you stopped mid-quiz, the score once the quiz is done, the next quiz when there is nothing to ask, and an interrupted session as the first line. An empty inbox drops the `/integrate` line. The `/maintenance` line appears only when the command is worth running: with 5 or more pages changed or new since their last check, with any such page 14 days after the last check, or with an idea you keep missing or a leech. A changed page isn't a problem, only a reason to check. The message is in Portuguese when `language` contains "portugu" or starts with "pt", and in English otherwise. It only reads the vault's files: it doesn't run git or write anything. Outside a vault with Recall set up, it prints nothing.
+It shows only what matters: what is left if you stopped mid-quiz, the score once the quiz is done, the next quiz when there is nothing to ask, and an interrupted session as the first line. An empty inbox drops the `/integrate` line. The `/maintenance` line appears only when the command is worth running: with 5 or more pages changed or new since their last check, with any such page 14 days after the last check, or with an idea you keep missing or a leech. A changed page isn't a problem, only a reason to check. The message is in Portuguese when `language` contains "portugu" or starts with "pt", and in English otherwise. With the quiz off, it shows only the `/integrate` and `/maintenance` lines, and nothing when neither applies. It only reads the vault's files: it doesn't run git or write anything. Outside a vault with Recall set up, it prints nothing.
 
 ### Inbox format
 
@@ -211,7 +217,7 @@ To check retention, run `python3 <plugin folder>/scripts/srs.py stats` in the va
 
 ## Configuration
 
-`/setup` writes `.srs/config.json` in your vault. Use `/config`, or just ask, to change `scheduling.daily_limit`, `scheduling.new_per_day`, `scheduling.retry` and `integrate_review`; edit the file by hand for the rest.
+`/setup` writes `.srs/config.json` in your vault. Use `/config`, or just ask, to change `quiz`, `scheduling.daily_limit`, `scheduling.new_per_day`, `scheduling.retry` and `integrate_review`; edit the file by hand for the rest.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -223,6 +229,7 @@ To check retention, run `python3 <plugin folder>/scripts/srs.py stats` in the va
 | `paths.folder_map` | `folders.md` | Folder map: what each top-level folder takes, used by `/integrate` with `folders` |
 | `new_page_placement` | `folders` | `folders`: `/integrate` puts a new page in the existing folder whose topic fits best, or proposes a new folder in the vault's naming style. `flat`: every new page goes in `paths.new_pages` |
 | `inbox_heading_level` | `2` | Heading level that opens an inbox block |
+| `quiz` | `true` | The daily quiz. `false`: `/quiz` and `/promote` don't run and `/integrate` queues nothing; the schedule is kept as it was |
 | `integrate_review_prompt` | see below | The one-time question and the reminders while `integrate_review` is `human`. `first_days` (`14`): wait after an answer; `max_days` (`41`): the longest wait, since each "not now" doubles it; `min_commits` (`10`): blocks approved since the last answer before a reminder. `asked`, `asked_head` and `wait_days` are kept by `srs.py config`: don't edit them |
 | `integrate_review` | `human` | `human`: you approve each diff of `/integrate`. `agent`: you approve the plan, then the script's checks and the judge agents decide each block, and you supervise only the blocks they send back |
 | `exclude` | `[]` | Patterns to ignore: `folder/`, `*.excalidraw.md`, `Daily/*.md` |
