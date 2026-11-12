@@ -24,4 +24,4 @@ If the block says NOT SET UP, tell the user to run /setup, and stop. An open ses
 6. Retry ("a second try after a wrong answer"): run `srs.py config --retry on` or `--retry off`. The interval after a retry stays the same by default; a number of days sets it, never above the current interval: `srs.py config --retry-interval 3`, or `--retry-interval same` to go back. The request is the approval.
 7. Close by relaying the script's lines on today's effect. A change made during a quiz applies from the next `srs.py due`.
 
-Any other setting is edited by hand in `.srs/config.json`: say so, and point to the Configuration section of the README. Never edit that file yourself.
+Any other setting is edited by hand in `.srs/config.json`: say so, and point to the Configuration section of Recall's manual, `docs/usage.md`. Never edit that file yourself.

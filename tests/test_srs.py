@@ -2277,7 +2277,7 @@ class WelcomeTest(VaultCase):
                 self.assertIn("1 block in the inbox: Fração", json.loads(proc.stdout.decode())["systemMessage"])
 
     def test_docs_describe_it(self):
-        for name in ("README.md", "docs/design.md"):
+        for name in ("docs/usage.md", "docs/design.md"):
             self.assertIn("SessionStart", (ROOT / name).read_text(encoding="utf-8"), name)
 
 
@@ -2473,9 +2473,9 @@ class FlagTest(VaultCase):
 
 
 class IntegrateOrderTest(unittest.TestCase):
-    """The skill, the README and the design describe the same order of blocks."""
+    """The skill, the README, the manual and the design describe the same order of blocks."""
 
-    DOCS = ("skills/integrate/SKILL.md", "README.md", "docs/design.md")
+    DOCS = ("skills/integrate/SKILL.md", "README.md", "docs/usage.md", "docs/design.md")
 
     def test_blocks_follow_the_didactic_order_of_the_plan(self):
         for name in self.DOCS:
@@ -2532,7 +2532,7 @@ class QuizAsksItselfTest(unittest.TestCase):
         self.assertIn("[[Page#Concept]]", (ROOT / "skills/integrate/SKILL.md").read_text())
 
     def test_readme_and_design_describe_it(self):
-        for name in ("README.md", "docs/design.md"):
+        for name in ("README.md", "docs/usage.md", "docs/design.md"):
             text = (ROOT / name).read_text()
             self.assertNotIn("question-drafter", text, name)
             self.assertNotIn("in the background", text, name)

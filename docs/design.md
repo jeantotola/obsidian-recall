@@ -1,6 +1,6 @@
 # Recall design
 
-This document holds the full rules. The [README](../README.md) covers installation and daily use.
+This document holds the full rules. The [README](../README.md) gives the overview and the installation, and the [manual](usage.md) covers daily use.
 
 Recall turns an Obsidian vault into a study system with three moving parts: an inbox you write in, an index of the concepts each page explains, and a spaced-repetition schedule over the concepts you choose to remember. The schedule and its daily quiz are optional (see [Without the quiz](#without-the-quiz)). Six commands drive it. The model writes, asks and judges; a deterministic script keeps the state, does the arithmetic and runs git; you approve.
 

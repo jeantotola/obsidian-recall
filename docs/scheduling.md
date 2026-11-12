@@ -1,6 +1,6 @@
 # Scheduling
 
-This document gives the exact rules of Recall's scheduling algorithms. The [README](../README.md#scheduling) has the summary; the code is in [`scripts/srs.py`](../scripts/srs.py), under "Scheduling".
+This document gives the exact rules of Recall's scheduling algorithms. The [manual](usage.md#scheduling) has the summary; the code is in [`scripts/srs.py`](../scripts/srs.py), under "Scheduling".
 
 Answers are pass or fail, plus retry when `scheduling.retry.enabled` is on. The script applies every answer and computes every date; the model never does. Two algorithms are built in:
 
