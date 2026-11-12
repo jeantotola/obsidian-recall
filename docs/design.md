@@ -144,7 +144,7 @@ Question rules, editable in `.srs/quiz-rules.md`:
 
 ## Without the quiz
 
-The `quiz` key in `.srs/config.json` (default `true`) turns the quiz off. `/setup` asks about it, and `srs.py config --quiz on|off`, or `/config`, changes it later; a vault set up before the key existed has the quiz on.
+The `quiz` key in `.srs/config.json` (default `true`) turns the quiz off. `/setup` asks about it, and `srs.py config --quiz on|off`, or `/config`, changes it later.
 
 - `/integrate` still plans, writes and commits every block, and keeps the index. It skips the review list at the end, so nothing is queued or updated.
 - `/quiz` and `/promote` say the quiz is off and stop. `/setup` doesn't ask for a scheduling algorithm.
@@ -177,7 +177,7 @@ Diary-style files (entries by date rather than by concept) are indexed like any 
 6. Nothing else is fixed automatically. Splitting a page, merging concepts or renaming goes through the main agent, as an edit you approve by diff.
 7. When the batch is empty and no seal was removed, the session ends without a commit. `srs.py commit` with nothing to commit prints "Nothing to commit." and exits 0.
 
-**Seals are hashes.** A seal stores the git blob hash of the page and a hash of its index entry. Any change to either, through Recall or by hand in Obsidian, breaks the seal without anyone having to remember to remove it. The global duplicate check (criterion C) can still skip sealed pages safely: every new duplicate enters through a changed page, which has already lost its seal. When a duplicate is found, both pages stay unsealed until it is fixed. A seal doesn't record the criteria it was granted under: when the auditor gains a criterion, a sealed page meets it only once it changes or loses its seal. A seal outlives its page when the page is deleted, renamed, moved or excluded; `srs.py check` reports those entries and `srs.py prune-seals` removes them.
+**Seals are hashes.** A seal stores the git blob hash of the page and a hash of its index entry. Any change to either, through Recall or by hand in Obsidian, breaks the seal without anyone having to remember to remove it. The global duplicate check (criterion C) can still skip sealed pages safely: every new duplicate enters through a changed page, which has already lost its seal. When a duplicate is found, both pages stay unsealed until it is fixed. A seal outlives its page when the page is deleted, renamed, moved or excluded; `srs.py check` reports those entries and `srs.py prune-seals` removes them.
 
 Leeches are where the review and the vault meet: a concept that keeps failing points to a page to split or rewrite.
 
