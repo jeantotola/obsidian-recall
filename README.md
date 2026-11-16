@@ -145,6 +145,7 @@ The script's tests run it against temporary git repositories: both scheduling al
 ## Not measured yet
 
 - Whether the judges catch real problems, and how often they fail a good block. Every committed block carries its verdicts, so after a month of use the git log will show how often a judge asked for a revision, and whether the concept judge is worth its Sonnet cost.
+- How often the page auditor agrees with a careful human reading. Its criteria come from an error analysis of a practice round, not from a measurement on blind labels.
 - Whether the auditor's notes on thin pages and misplaced concepts match what the quiz finds on the same pages.
 - The scheduling parameters. Both algorithms run on their default values, and `srs.py stats`, which reports retention for calibration, needs a month or more of reviews.
 - Native Windows. Recall targets macOS, Linux and WSL.

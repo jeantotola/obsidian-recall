@@ -35,7 +35,7 @@ The index lists, for each page, the concepts that page explains:
 
 - One section per page. Write the link as Obsidian would: the file name, or the path from the vault root without `.md` when two files share that name.
 - One concept per line. A description is optional: add it only when the name alone is ambiguous, after a space, an em dash and a space, within the configured character limit. It clarifies; it doesn't define.
-- A page lists only the concepts it explains, not the ones it mentions. Other pages link to the owner page.
+- A page lists only the concepts it explains, not the ones it mentions. It explains a concept when someone could answer "what is X?" from the page alone; an example or a notation on its own doesn't. Other pages link to the owner page.
 - Concept names are unique across the whole index. When a name is ambiguous, put the qualifier in the name itself, in parentheses.
 - Granularity: a concept is something that would have its own entry in a glossary ("Eigenvectors", not "Linear algebra").
 - Concepts marked `[review]` or `[queued]` are in the schedule. Never rename or remove one in the index without also running `srs.py rename` or `srs.py remove`.

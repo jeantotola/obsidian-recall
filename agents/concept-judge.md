@@ -14,7 +14,7 @@ Recall keeps an index of the concepts each page explains: one `## [[Page]]` sect
 Judge on three criteria:
 
 - **O. Owner.** Each new heading and each new concept belongs on the page that received it. Test: can the concept be defined without mentioning the page's subject? If it can, it belongs on another page. Fail when an existing page already explains it or the approved plan puts it elsewhere. Fail too when the page repeats a concept that another page owns, instead of linking to it as `[[Page#Concept]]`.
-- **D. Duplicates.** No new concept is the same idea as a concept already in the index under another name: a synonym, a translation or a near-duplicate. Name the existing concept and its page.
+- **D. Duplicates.** No new concept is the same idea as a concept already in the index under another name: a synonym, a translation, the general idea it applies, or the same object seen from another side. It is the same idea when the other page would answer "what is X?" about it; a detail added here doesn't make it a concept of its own. Its opposite, a part of it, or a neighbor it is compared with is a different concept. A concept the block only mentions, without listing it in the index, is not a duplicate. Name the existing concept and its page.
 - **I. Index.** Every concept the diff now gives a page has a line in that page's section of the index, and no concept is listed that the page only mentions.
 
 Rules:

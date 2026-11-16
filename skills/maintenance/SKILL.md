@@ -28,7 +28,7 @@ The block above comes from Recall's script. Call the script as `python3 ${CLAUDE
 4. Report in short sections, leaving out empty ones:
    - pages sealed;
    - stale seals removed, with the count and the paths;
-   - pages that failed, with the criterion and the reason. For a duplicate (C), give the fix the auditor chose: keep the concept on the owner page and drop it from the other (with `srs.py remove` if it is in the schedule). For a borderline one (C?), offer two options and let the user pick: keep it only on the owner page, or keep both, the applied one with a qualifier in its name and a description of what it adds;
+   - pages that failed, with the criterion and the reason. For a duplicate (C), give the fix the auditor chose: keep the concept on the owner page and drop it from the other (with `srs.py remove` if it is in the schedule). For one the auditor couldn't decide (C?), offer two options and let the user pick: one owner, with the other page mentioning the idea and linking to it, or keep both, the applied one with a qualifier in its name and a description of what it adds;
    - problems from the deterministic checks, with the fix for each: split pages over the size limit, rename or merge duplicate names, shorten long descriptions, fix links that don't resolve, remove or re-add orphans, add a folder-map row for each folder without one (/setup drafts the map when it doesn't exist) and remove or rename rows that name no folder;
    - leeches: the concept may be too broad (split it) or its page confusing (rewrite it);
    - gaps that won't close: suggest rewriting that part of the page, or making the idea a concept of its own, in the index and the schedule, then running `srs.py gap "<Concept>" --close`;

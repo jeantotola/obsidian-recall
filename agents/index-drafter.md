@@ -20,7 +20,7 @@ For each page, output its entry in exactly this format:
 Rules:
 
 - **Link.** The file name without `.md`. If another file in the vault has the same name, use the path from the vault root without `.md`.
-- **Explains, not mentions.** List a concept only when the page defines it, derives it, or discusses it in its own right. A passing mention doesn't count.
+- **Explains, not mentions.** List a concept only when the page defines it, derives it, or discusses it in its own right. A passing mention doesn't count, and neither does an example or a notation on its own: someone must be able to answer "what is X?" from the page.
 - **Granularity.** A concept is something that would have its own glossary entry: "Eigenvectors" yes, "Linear algebra" no, "Eigenvectors of a diagonal matrix" no.
 - **Names.** In the concept language, as a glossary would write them. When a name is ambiguous, put the qualifier in the name, in parentheses, such as "Reversibility (calculus)".
 - **Descriptions.** Only when the name alone is ambiguous, after " — " (space, em dash, space), within the character limit. A description clarifies; it doesn't define.
