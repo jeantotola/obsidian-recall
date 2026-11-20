@@ -136,7 +136,6 @@ Recall: today 22 questions: 15 reviews, 7 new concepts
 - Haiku does the bulk reading: indexing pages during `/setup`, auditing them in `/maintenance`, judging diffs. Sonnet judges concepts, and only on blocks that add one.
 - In agent review the script's checks come first, and a block that keeps failing them is set aside without a judge being called.
 - The welcome message costs no tokens: the hook runs the script, which only reads the vault's files. It takes about 0.4 seconds on a vault of 150 pages.
-- With more than 10 questions left in a quiz, a fork of the session drafts the later questions while you answer the first ones.
 
 ## Tests
 

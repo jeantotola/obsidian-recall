@@ -1855,11 +1855,11 @@ class QuestionCountTest(VaultCase):
         self.assertIn("without a count", skill)
 
 
-class PrepareAheadTest(VaultCase):
-    """More than 10 questions left: /quiz has a fork draft them from the fourth item on."""
+class NoPrepareAheadTest(VaultCase):
+    """/quiz writes each question when it asks it: no fork drafts them ahead, even on a long list."""
 
     DAY = "2026-01-11"
-    NAMES =[f"Concept {n}" for n in range(1, 13)]
+    NAMES = [f"Concept {n}" for n in range(1, 13)]
 
     def setUp(self):
         super().setUp()
@@ -1870,27 +1870,13 @@ class PrepareAheadTest(VaultCase):
         path.write_text(json.dumps(config))
         self.srs("add", "--source", "integrate", *self.NAMES)
 
-    def due(self):
-        return self.srs("due", today=self.DAY).stdout
+    def test_long_list_has_no_prepare_ahead_line(self):
+        self.assertNotIn("Prepare ahead", self.srs("due", today=self.DAY).stdout)
 
-    def test_long_list_is_prepared_ahead_from_the_fourth_item(self):
-        self.assertIn("Prepare ahead: items 4 to 12 of the list below (questions 4/12 to 12/12).", self.due())
-        self.assertIn("Prepare ahead", self.srs("context", "quiz", today=self.DAY).stdout)
-
-    def test_range_follows_what_is_left(self):
-        self.srs("record", "Concept 1", "pass", today=self.DAY)
-        self.assertIn("Prepare ahead: items 4 to 11 of the list below (questions 5/12 to 12/12).", self.due())
-
-    def test_ten_or_fewer_left_are_not_prepared(self):
-        self.srs("record", "Concept 1", "pass", today=self.DAY)
-        self.srs("record", "Concept 2", "pass", today=self.DAY)
-        self.assertNotIn("Prepare ahead", self.due())
-
-    def test_skill_launches_a_fork(self):
+    def test_skill_launches_no_fork(self):
         skill = (ROOT / "skills/quiz/SKILL.md").read_text()
-        self.assertIn("Prepare ahead", skill)
-        self.assertIn('"fork"', skill)
-        self.assertIn("say nothing and end your turn at once", skill)
+        self.assertNotIn("fork", skill)
+        self.assertNotIn("Prepare ahead", skill)
 
 
 class WelcomeTest(VaultCase):
