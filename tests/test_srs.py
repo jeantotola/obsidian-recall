@@ -2471,9 +2471,11 @@ class IntegrateOrderTest(unittest.TestCase):
             self.assertNotIn("from the oldest to the newest", text, name)
             self.assertNotIn("the order in which", text, name)
 
-    def test_existing_text_is_only_added_to(self):
+    def test_existing_text_changes_only_through_the_plan(self):
         skill = (ROOT / "skills/integrate/SKILL.md").read_text()
         self.assertIn("not at the end of the page by default", skill)
+        self.assertIn("The goal is the best page, not the smallest diff", skill)
+        self.assertNotIn("as little as possible", skill)
         self.assertIn("Never move or rewrite the text already on the page unless an item of the approved plan says to", skill)
 
 

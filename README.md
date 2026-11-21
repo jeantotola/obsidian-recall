@@ -48,9 +48,9 @@ because det(A − λI) is the product of the (a_ii − λ).
 
 ### Integrating
 
-`/integrate` plans the whole batch before writing anything. The model reads the blocks, groups them by subject, looks up in the index the pages that could take each group, and reads those pages and no others. The plan is a short numbered list: the page for each group, or a new page and its folder, with the blocks in didactic order. A concept that can be defined without the page's subject is split off to a page of its own subject, with a link left in its place. You answer `ok` or adjust the plan.
+`/integrate` plans the whole batch before writing anything. The model reads the blocks, groups them by subject, looks up in the index the pages that could take each group, and reads those pages and no others. The plan is a short numbered list: the page for each group, or a new page and its folder, with the blocks in didactic order. A concept that can be defined without the page's subject is split off to a page of its own subject, with a link left in its place. When a page already holds thin, misplaced or now redundant text on the subject, the plan proposes moving or rewriting it: the goal is a well-organized wiki, not the smallest change. You answer `ok` or adjust the plan.
 
-Then it goes block by block, groups from the newest to the oldest. The model writes each block where the plan puts it, keeps your wording, and marks anything of its own with a `> [!claude]` callout. A factual error in your text stays, and is pointed out in the chat instead of being fixed silently. You see the diff:
+Then it goes block by block, groups from the newest to the oldest. The model writes each block where the plan puts it, keeps your wording, and marks any idea or fact of its own with a `> [!claude]` callout; a sentence that only links two pages goes in without one. A factual error in your text stays, and is pointed out in the chat instead of being fixed silently. You see the diff:
 
 ```diff
 --- a/Math/Eigendecomposition.md
