@@ -1,6 +1,6 @@
 ---
 name: index-drafter
-description: Drafts Recall index entries (the concepts each page explains) for a batch of vault pages. Read-only. Used by /setup.
+description: Drafts Recall index entries (the concepts each page explains) for a batch of vault pages. Read-only. Used by /maintenance.
 model: haiku
 tools: Read, Glob, Grep
 ---

@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Set up Recall, a git-native study system, in this Obsidian vault, draft its folder map, or continue indexing the vault's existing pages. Run once, then again until every page is indexed.
+description: Set up Recall, a git-native study system, in this Obsidian vault. Run once; /maintenance then indexes the vault's existing pages.
 disable-model-invocation: true
 allowed-tools:
   - Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/srs.py *)
@@ -26,28 +26,9 @@ The block above comes from Recall's script. Call the script as `python3 ${CLAUDE
    - only with the quiz on, the scheduling algorithm, from the list in the block, one line each: `anki` (the default) or `thirds`. Mention that the Scheduling section of Recall's manual, `docs/usage.md`, compares them and that it can be changed later in `.srs/config.json`.
 3. Run `srs.py init` with the answers: `--quiz <on|off> --algorithm <name> --language "..." --concept-language "..." --inbox "..." --index "..." --new-pages "..." --folder-map "..." --new-page-placement <folders|flat> --heading-level N`, one `--exclude "..."` per pattern, `--algorithm` only with the quiz on, and `--git-init` only if the folder has no repository and the user agreed to create one.
 4. If it reports a missing git identity, show the two commands it prints and stop; the user runs them and then /setup again.
-5. Continue with the folder map, then indexing. The block above was computed before setup, so run `srs.py context setup` for the folder map section, and get the first indexing batch from `srs.py setup-batch`.
+5. Close with what comes next: relay the number of pages not in the index that `srs.py init` printed and, when there are any, say that /maintenance drafts the folder map (with `folders`) and indexes them, one batch at a time, and that indexing puts nothing in the quiz. From now on /integrate takes care of the inbox and /maintenance of the wiki. Don't index anything here.
 
-## Folder map
-
-Do this only when the block (or `srs.py context setup`, right after init) has a "Folder map" section that lists folders; otherwise go to indexing.
-
-1. If the block reports an INTERRUPTED SESSION, resolve it first as it says. Then `srs.py begin setup`.
-2. If the map does not exist, write it at the path the block gives, from the template in the block, in the language Recall talks to the user in. If it exists, only add the missing rows and leave the rest as it is.
-3. Write one row per listed folder, with the name exactly as listed. Take each scope from what the folder holds, its page names (read a page when the names leave it unclear), not from the folder name alone. In the last column, name the folder that takes what doesn't belong. Add one tie-break question for each pair of folders that could both take a page. Keep the section on new folders as the template has it.
-4. Pages that look misplaced: list them in the chat, and don't move them. Write the scopes for where pages belong, not to fit the misplaced ones.
-5. Run `srs.py diff` and show the diff in a ```diff block. Say in one line that the scopes, the tie-breaks and the numbers in the rules for new folders, such as the 3-page minimum for a new top-level folder, are theirs to edit in the file. Ask: ok, change or stop.
-6. On "ok": `srs.py commit -m "setup: folder map"`. On a change request: edit, then show the new diff. On "stop": `srs.py discard`. Then `srs.py end`, and go on to indexing.
-
-## Indexing existing pages
-
-Nothing enters the review queue during setup. Each round indexes one batch.
+## If Recall is already configured
 
 1. If the block reports an INTERRUPTED SESSION, resolve it first as it says.
-2. If every page is indexed, say so, suggest /integrate (and /promote, when the block says `Quiz: on`), and stop.
-3. `srs.py begin setup`.
-4. Use the Agent tool with the `recall:index-drafter` agent. Give it the batch paths (from the block, or from `srs.py setup-batch` after the first round), the concept language, the description limit and the index path.
-5. Append its entries to the index file with Edit. Resolve duplicates: when two pages explain the same concept, keep one owner, preferring a page about the concept over a diary-style page, and remove the concept from the other entry.
-6. Run `srs.py diff`. If it prints index warnings, fix them and run it again before asking for approval. Show the user the diff in a ```diff block, with one line on duplicates or skipped pages. Ask: ok, change or stop.
-7. On "ok": `srs.py commit -m "setup: index <N> pages"`. On a change request: edit, then show the new diff. On "stop": `srs.py discard`.
-8. Say how many pages are left and ask whether to index the next batch (`srs.py setup-batch` lists it). When the user stops or nothing is left: `srs.py end`.
+2. Say that Recall is set up and that /setup has nothing left to do: /maintenance indexes pages and keeps the folder map (give the number of pages not in the index), and /config changes the settings. Stop.

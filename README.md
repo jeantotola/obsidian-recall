@@ -120,7 +120,7 @@ The quiz tests your notes as well as your memory. A concept you keep failing, or
 
 ### Maintenance
 
-`/maintenance` starts with the script's checks: pages over the size limit, names used twice, links that don't resolve, scheduled concepts missing from the index, pages not yet indexed. Then a Haiku agent reads up to 20 pages and judges each one against its index entry: every listed concept is explained, nothing important is missing, and no concept duplicates another page's under a different name. It also notes thin pages and misplaced concepts, which become flags, with their reasons, only if you approve them, and never fail the page. Every item in the report has an ID you answer by, and the session closes with the list of what was done, declined and left open. A page that passes gets a seal, which stores the git hash of the page and a hash of its index entry. Any edit breaks the seal, whether it comes through Recall or from Obsidian, without anyone having to remember to remove it, so each run audits only what changed.
+`/integrate` takes care of the inbox, and `/maintenance` of the wiki, whoever edited it. It starts with the script's checks: pages over the size limit, names used twice, links that don't resolve, scheduled concepts missing from the index, pages not yet indexed. When pages were created, renamed or moved outside Recall, it first brings the index and the folder map up to date: a Haiku agent drafts the entries of the new pages, and you approve the result by diff. Then another Haiku agent reads up to 20 pages and judges each one against its index entry: every listed concept is explained, nothing important is missing, and no concept duplicates another page's under a different name. It also notes thin pages and misplaced concepts, which become flags, with their reasons, only if you approve them, and never fail the page. Every item in the report has an ID you answer by, and the session closes with the list of what was done, declined and left open. A page that passes gets a seal, which stores the git hash of the page and a hash of its index entry. Any edit breaks the seal, whether it comes through Recall or from Obsidian, without anyone having to remember to remove it, so each run audits only what changed.
 
 When you open a session in the vault, a hook prints what is waiting, without calling the model:
 
@@ -133,7 +133,7 @@ Recall: today 22 questions: 15 reviews, 7 new concepts
 
 ## Cost and speed
 
-- Haiku does the bulk reading: indexing pages during `/setup`, auditing them in `/maintenance`, judging diffs. Sonnet judges concepts, and only on blocks that add one.
+- Haiku does the bulk reading: indexing and auditing pages in `/maintenance`, judging diffs. Sonnet judges concepts, and only on blocks that add one.
 - In agent review the script's checks come first, and a block that keeps failing them is set aside without a judge being called.
 - The welcome message costs no tokens: the hook runs the script, which only reads the vault's files. It takes about 0.4 seconds on a vault of 150 pages.
 
@@ -160,7 +160,7 @@ In Claude Code, opened in your vault:
 /plugin install recall@obsidian-recall
 ```
 
-Choose the **project** scope, so Recall's commands and hooks load only in this vault. Then run `/setup`. It asks a few questions (the languages, the paths, what to exclude, whether you want the quiz and, if so, which scheduling algorithm), creates the inbox and the index, and turns the vault into a git repository if it isn't one. Run `/setup` again until your existing pages are indexed: each round indexes 20 pages with a Haiku agent, and you approve the result by diff.
+Choose the **project** scope, so Recall's commands and hooks load only in this vault. Then run `/setup`. It asks a few questions (the languages, the paths, what to exclude, whether you want the quiz and, if so, which scheduling algorithm), creates the inbox and the index, and turns the vault into a git repository if it isn't one. Then run `/maintenance` to index the pages you already have: each round indexes 20 with a Haiku agent, you approve the result by diff, and you choose whether to go on with the next 20, audit what is indexed or stop.
 
 ## Commands
 
@@ -169,8 +169,8 @@ Choose the **project** scope, so Recall's commands and hooks load only in this v
 | `/integrate [n \| file]` | After studying | Plans where the inbox blocks go, then integrates them with one diff and one commit per block |
 | `/quiz` | Daily, with the quiz on | Asks about the concepts that are due |
 | `/promote [page or topic]` | With the quiz on | Adds concepts from notes you already had to the quiz |
-| `/maintenance` | Now and then | Checks the pages against the index, seals the ones that pass and reports the rest |
-| `/setup` | Once, then until your pages are indexed | Configures the vault and indexes its existing pages |
+| `/maintenance` | Now and then, whenever the wiki changed | Indexes new pages, checks the pages against the index, seals the ones that pass and reports the rest |
+| `/setup` | Once | Configures the vault |
 | `/config [change]` | When your pace changes | Shows or changes the quiz, its daily pace and who reviews `/integrate` |
 
 If another plugin uses the same name, type `/recall:quiz` and so on.

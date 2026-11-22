@@ -128,7 +128,7 @@ DEFAULT_CONFIG = {
         "page_max_chars": 6000,
         "description_max_chars": 60,
         "maintenance_batch": 20,
-        "setup_batch": 20,
+        "setup_batch": 20,  # pages indexed per round of /maintenance; the key is older: /setup did it up to 0.24.0
         "long_queue": 35,
     },
     "target_retention": [0.85, 0.9],
@@ -570,13 +570,17 @@ def link_tables(v: Vault):
     return by_stem, by_path
 
 
-def link_candidates(tables, link: str) -> list:
-    """The files a link can mean: by file name when it has no slash, by path (or path suffix) otherwise."""
-    by_stem, by_path = tables
+def clean_link(link: str) -> str:
     link = link.strip().replace("\\", "/")
     if link.lower().endswith(".md"):
         link = link[:-3]
-    link = link.strip("/")
+    return link.strip("/")
+
+
+def link_candidates(tables, link: str) -> list:
+    """The files a link can mean: by file name when it has no slash, by path (or path suffix) otherwise."""
+    by_stem, by_path = tables
+    link = clean_link(link)
     if "/" in link:
         exact = by_path.get(link.casefold())
         if exact:
@@ -617,13 +621,14 @@ def load_index(v: Vault):
 
 
 def empty_state() -> dict:
-    return {"version": 1, "next_order": 1, "concepts": {}, "flags": {"thin": {}, "misplaced": {}}}
+    return {"version": 1, "next_order": 1, "concepts": {}, "flags": {"thin": {}, "misplaced": {}}, "skipped": {}}
 
 
 def load_state(v: Vault) -> dict:
     state = read_json(v.srs / "state.json", empty_state())
     state.setdefault("concepts", {})
     state.setdefault("next_order", 1)
+    state.setdefault("skipped", {})
     flags = state.setdefault("flags", {})
     thin = flags.setdefault("thin", {})
     flags.setdefault("misplaced", {})
@@ -1520,17 +1525,56 @@ def stale_flags(v: Vault, state: dict, idx: Index) -> list:
     return out
 
 
+def unindexed_pages(v: Vault, idx: Index, state: dict) -> tuple:
+    """The content pages without an index entry: (the ones to index, the ones skipped
+    because they had nothing to index and haven't changed since)."""
+    indexed = {p.path for p in idx.pages if p.path}
+    left, skipped = [], []
+    for rel in content_pages(v):
+        if rel in indexed:
+            continue
+        record = state["skipped"].get(rel)
+        same = record and record.get("blob") == blob_hash((v.root / rel).read_bytes())
+        (skipped if same else left).append(rel)
+    return left, skipped
+
+
+def lost_entries(v: Vault, idx: Index, verified: dict, left: list) -> list:
+    """Index entries that lost their page, each with the pages it may be about:
+    (entry, [(page, why)]). A link that became ambiguous gives its candidates. A link
+    to no page gives the unindexed pages with the text last sealed under the old
+    name (a rename) or with the same file name (a move)."""
+    found = []
+    pages = set(content_pages(v))
+    for page in idx.pages:
+        if page.status == "ambiguous":
+            found.append((page, [(rel, "same name") for rel in page.candidates]))
+        elif page.status == "missing":
+            link = clean_link(page.link).casefold()
+            sealed = {r.get("blob") for rel, r in verified.items()
+                      if rel not in pages and ("/" + rel[:-3].casefold()).endswith("/" + link)}
+            likely = []
+            for rel in left:
+                if sealed and blob_hash((v.root / rel).read_bytes()) in sealed:
+                    likely.append((rel, "same text"))
+                elif Path(rel).stem.casefold() == link.rsplit("/", 1)[-1]:
+                    likely.append((rel, "same file name"))
+            found.append((page, likely))
+    return found
+
+
 def run_checks(v: Vault) -> dict:
     idx, _ = load_index(v)
     state = load_state(v)
     verified = load_verified(v)
     limits = v.limits
-    pages = content_pages(v)
-    indexed = {p.path for p in idx.pages if p.path}
+    left, skipped = unindexed_pages(v, idx, state)
     report = {
         "over_size": [],
         "orphans": [],
-        "unindexed": [p for p in pages if p not in indexed],
+        "unindexed": left,
+        "skipped": skipped,
+        "lost_entries": lost_entries(v, idx, verified, left),
         "unverified": [],
         "stale_seals": stale_seals(v, verified),
         "stale_flags": stale_flags(v, state, idx),
@@ -1593,7 +1637,7 @@ def format_checks(v: Vault, report: dict, only=None) -> list:
         ("link_problems", "Index links that don't resolve", link_line),
         ("index_problems", "Index lines not understood", lambda x: f"line {x[0]}: {x[1]}"),
         ("orphans", "Concepts in review but not in the index (orphans)", lambda x: x),
-        ("unindexed", "Pages not in the index (index them with /setup)", lambda x: x),
+        ("unindexed", "Pages not in the index", lambda x: x),
         ("unverified", "Indexed pages without a valid seal", lambda p: p.path),
         ("stale_seals", "Stale seals (the file is gone or is no longer a page; /maintenance removes them)", lambda x: x),
         ("stale_flags", "Stale flags (the page is gone, or the concept left the index; /maintenance removes them)",
@@ -1711,6 +1755,10 @@ def cmd_init(args):
         print("Quiz: off. /config turns it on.")
     print(f"New page placement: {config['new_page_placement']}.")
     print(f"Recall is set up. Committed {sha}: setup: initialize Recall.")
+    v = Vault(root=root, config=load_config(root), today=compute_today(config, args.today))
+    left, _ = unindexed_pages(v, load_index(v)[0], empty_state())
+    print(f"Pages not in the index: {len(left)}." + (
+        f" /maintenance indexes them, {v.limits['setup_batch']} at a time." if left else ""))
 
 
 def cmd_begin(args):
@@ -2713,15 +2761,58 @@ def cmd_inbox(args):
     print(f"Removed {len(args.ids)} block(s) from {rel}; {left} left.")
 
 
-def cmd_setup_batch(args):
+def index_batch_lines(v: Vault, report: dict) -> list:
+    """What /maintenance needs to bring the index up to date: the entries that lost
+    their page and the next pages to index. A page one of those entries may be about
+    is held back: indexing it as new would leave its concepts with two entries."""
+    lost, left = report["lost_entries"], report["unindexed"]
+    if not lost and not left:
+        return ["Nothing to index: every entry has its page and every page has its entry."]
+    out = []
+    claimed = {rel for _, likely in lost for rel, _ in likely}
+    if lost:
+        out.append(f"Index entries without their page: {len(lost)}")
+        for page, likely in lost:
+            state = "ambiguous link" if page.status == "ambiguous" else "no such page"
+            out.append(f"  [[{page.link}]] (index line {page.line}): {state}. Concepts: "
+                       + ("; ".join(c.name for c in page.concepts) or "none"))
+            out += [f"    may be {rel} ({why})" for rel, why in likely]
+    free = [rel for rel in left if rel not in claimed]
+    held = [rel for rel in left if rel in claimed]
+    batch = free[: v.limits["setup_batch"]]
+    out.append(f"Pages to index: {len(free)}. Next batch ({len(batch)}):")
+    out += [f"  {rel} ({len(read_text(v.root / rel))} characters)" for rel in batch]
+    if held:
+        out.append(f"Held back until the entry they may belong to is fixed: {len(held)}")
+        out += [f"  {rel}" for rel in held]
+    out.append(f"Index file: {v.index_rel}. Description limit: {v.limits['description_max_chars']} characters.")
+    return out
+
+
+def cmd_index_batch(args):
     v = open_vault(args)
+    print("\n".join(index_batch_lines(v, run_checks(v))))
+
+
+def cmd_index_skip(args):
+    """Record pages with nothing to index: they stay out of the batch until they change."""
+    v = open_vault(args)
+    require_session(v)
     idx, _ = load_index(v)
+    state = load_state(v)
+    pages = set(content_pages(v))
     indexed = {p.path for p in idx.pages if p.path}
-    left = [p for p in content_pages(v) if p not in indexed]
-    batch = left[: v.limits["setup_batch"]]
-    print(f"Pages not in the index: {len(left)}. Next batch ({len(batch)}):")
-    for rel in batch:
-        print(f"  {rel} ({len(read_text(v.root / rel))} characters)")
+    rels = [norm_rel(p) for p in args.pages]
+    for rel in rels:
+        if rel not in pages:
+            raise SrsError(f"Not a page of the vault: {rel}", 2)
+        if rel in indexed:
+            raise SrsError(f"Already in the index: {rel}", 2)
+    for rel in rels:
+        state["skipped"][rel] = {"blob": blob_hash((v.root / rel).read_bytes()), "day": v.today.isoformat()}
+    state["skipped"] = {rel: r for rel, r in state["skipped"].items() if rel in pages and rel not in indexed}
+    save_state(v, state)
+    print(f"Skipped {plural(len(rels), 'page')} with nothing to index, until the page changes: {', '.join(rels)}")
 
 
 # Strings of the welcome message. Pairs are (singular, plural).
@@ -2746,6 +2837,7 @@ WELCOME_STRINGS = {
         "block": ("bloco", "blocos"),
         "changed": ("{pages} mudou desde a última verificação ({ago})", "{pages} mudaram desde a última verificação ({ago})"),
         "unchecked": "{pages} sem verificação",
+        "unindexed": "{pages} fora do índice",
         "ago_today": "hoje",
         "ago": ("há {n} dia", "há {n} dias"),
         "page": ("página", "páginas"),
@@ -2774,6 +2866,7 @@ WELCOME_STRINGS = {
         "block": ("block", "blocks"),
         "changed": ("{pages} changed since the last check ({ago})", "{pages} changed since the last check ({ago})"),
         "unchecked": "{pages} not checked yet",
+        "unindexed": "{pages} not in the index",
         "ago_today": "today",
         "ago": ("{n} day ago", "{n} days ago"),
         "page": ("page", "pages"),
@@ -2784,7 +2877,7 @@ WELCOME_STRINGS = {
     },
 }
 WELCOME_MAX_TITLES = 3
-MAINTENANCE_PAGES = 5  # the welcome suggests /maintenance with this many pages without a valid seal
+MAINTENANCE_PAGES = 5  # the welcome suggests /maintenance with this many pages unsealed or not in the index
 MAINTENANCE_DAYS = 14  # or with any such page, this long after the last seal
 
 
@@ -2827,17 +2920,20 @@ def welcome_inbox(v: Vault, words: dict):
 
 def welcome_maintenance(v: Vault, state: dict, words: dict):
     """The /maintenance line's text, only when the command is worth running; None otherwise.
-    Any edit breaks a page's seal, so a line for every unsealed page would soon go unread.
+    Any edit breaks a page's seal, so a line for every unsealed page would soon go unread;
+    pages not in the index wait the same way.
     The last check is the newest seal: the git log can't tell, since other commits use the prefix."""
     idx, _ = load_index(v)
     verified = load_verified(v)
     pending = sum(1 for page in idx.pages if page.status == "ok" and not seal_ok(v, verified, page))
+    unindexed = len(unindexed_pages(v, idx, state)[0])
     sealed = [day for day in (parse_day(r.get("day")) for r in verified.values()) if day]
     age = max(0, (v.today - max(sealed)).days) if sealed else None
     stuck = sum(1 for r in state["concepts"].values()
                 if r.get("gap") and int(r["gap"].get("fails") or 0) >= GAP_STUCK_FAILS)
     leeches = sum(1 for r in state["concepts"].values() if int(r.get("lapses") or 0) >= v.leech_at)
-    worth_it = pending >= MAINTENANCE_PAGES or (pending and age is not None and age >= MAINTENANCE_DAYS)
+    waiting = pending + unindexed
+    worth_it = waiting >= MAINTENANCE_PAGES or (waiting and age is not None and age >= MAINTENANCE_DAYS)
     if not (worth_it or stuck or leeches):
         return None
     parts = []
@@ -2848,6 +2944,8 @@ def welcome_maintenance(v: Vault, state: dict, words: dict):
         else:
             ago = words["ago_today"] if age == 0 else words["ago"][0 if age == 1 else 1].format(n=age)
             parts.append(words["changed"][0 if pending == 1 else 1].format(pages=pages, ago=ago))
+    if unindexed:
+        parts.append(words["unindexed"].format(pages=welcome_count(words, unindexed, "page")))
     if stuck:
         parts.append(welcome_count(words, stuck, "stuck"))
     if leeches:
@@ -3639,14 +3737,14 @@ def context_setup(args) -> list:
             out.append("Git identity: " + ("MISSING" if git_identity_problem(start) else "ok"))
         all_md = list_markdown(start)
         out.append(f"Markdown files, before exclusions and counting the inbox: {len(all_md)}. "
-                   "After init, srs.py setup-batch gives the pages left to index.")
+                   "After init, /maintenance indexes the pages.")
         out.append("")
         out.append("Defaults and what exists:")
         for key, default in DEFAULT_CONFIG["paths"].items():
             target = start / default
             exists = target.exists()
             line = f"  {key}: {default} — " + ("exists" if exists else {"new_pages": "created on first use",
-                                                                          "folder_map": "drafted by /setup after init"}
+                                                                          "folder_map": "drafted by /maintenance"}
                                                 .get(key, "will be created"))
             if key == "inbox" and exists and target.is_file():
                 counts = heading_counts(read_text(target))
@@ -3686,27 +3784,17 @@ def context_setup(args) -> list:
     out.append(f"Recall: configured. Quiz: {'on' if v.quiz else 'off'}.")
     out += session_lines(v)
     idx, _ = load_index(v)
-    indexed = {p.path for p in idx.pages if p.path}
-    pages = content_pages(v)
-    left = [p for p in pages if p not in indexed]
-    out.append(f"Content pages: {len(pages)}; in the index: {len(pages) - len(left)}; not yet indexed: {len(left)}.")
-    batch = left[: v.limits["setup_batch"]]
-    if batch:
-        out.append(f"Next batch to index ({len(batch)}):")
-        out += [f"  {rel}" for rel in batch]
-    else:
-        out.append("Every content page is indexed.")
-    out.append(f"Index file: {v.index_rel} ({len(idx.pages)} pages, {sum(1 for _ in idx.concepts())} concepts)")
-    out.append(f"Description limit: {v.limits['description_max_chars']} characters.")
-    out += folder_map_setup_lines(v)
+    left, skipped = unindexed_pages(v, idx, load_state(v))
+    out.append(f"Content pages: {len(content_pages(v))}; not in the index: {len(left)}; "
+               f"with nothing to index: {len(skipped)}.")
     out.append("")
     out.append("## Rules")
     out.append(rules_text())
     return out
 
 
-def folder_map_setup_lines(v: Vault) -> list:
-    """What /setup needs to draft the folder map: nothing when placement is flat,
+def folder_map_lines(v: Vault) -> list:
+    """What /maintenance needs to draft the folder map: nothing when placement is flat,
     one line when the map is complete; otherwise the folders to map, with their
     page names, and the template when the map does not exist yet."""
     if v.placement != "folders":
@@ -3821,7 +3909,7 @@ def context_integrate(v: Vault, extra: list) -> list:
             out.append(f"## Folder map ({v.folder_map_rel}): follow it to place new pages and propose new folders")
             out.append(read_text(map_path).rstrip("\n"))
         else:
-            out.append(f"## Folder map: none ({v.folder_map_rel} does not exist; /setup drafts it). "
+            out.append(f"## Folder map: none ({v.folder_map_rel} does not exist; /maintenance drafts it). "
                        "Pick folders by their names.")
     out.append("")
     out.append(f"Description limit: {v.limits['description_max_chars']} characters.")
@@ -4018,6 +4106,10 @@ def context_maintenance(v: Vault) -> list:
     out.append("## Deterministic checks")
     out += format_checks(v, report)
     out.append("")
+    out.append("## To index")
+    out += index_batch_lines(v, report)
+    out += folder_map_lines(v)
+    out.append("")
     out += audit_batch_lines(v, report)
     out.append("")
     out.append(f"Full index: {v.index_rel}")
@@ -4182,7 +4274,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("ids", nargs="*")
     p.add_argument("--file", help="another file with blocks, instead of the inbox")
     p.set_defaults(func=cmd_inbox)
-    sub.add_parser("setup-batch", help="the next pages to index").set_defaults(func=cmd_setup_batch)
+    sub.add_parser("index-batch", help="index entries without their page, and the next pages to index").set_defaults(
+        func=cmd_index_batch)
+    p = sub.add_parser("index-skip", help="record pages with nothing to index, until they change")
+    p.add_argument("pages", nargs="+")
+    p.set_defaults(func=cmd_index_skip)
     sub.add_parser("welcome", help="session-start status as hook JSON (read-only)").set_defaults(func=cmd_welcome)
     p = sub.add_parser("plan", help="save the approved /integrate plan for the agent review")
     p.add_argument("action", choices=["save"])

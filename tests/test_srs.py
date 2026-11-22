@@ -1305,6 +1305,148 @@ class ChecksTest(VaultCase):
         self.assertIn("/Bayes.md`", batch)
 
 
+class IndexBatchTest(VaultCase):
+    """/maintenance brings the index up to date before the audit: index-batch and index-skip."""
+
+    BAYES = "## [[Bayes]]\n- Bayes' theorem\n\n"
+    BOTH = "## [[Eigendecomposition]]\n- Eigenvectors\n\n" + BAYES
+
+    def batch(self):
+        return self.srs("index-batch").stdout
+
+    def state(self):
+        return json.loads((self.vault / ".srs/state.json").read_text())
+
+    def rename(self, old, new):
+        (self.vault / new).parent.mkdir(parents=True, exist_ok=True)
+        (self.vault / old).rename(self.vault / new)
+
+    def test_lists_pages_not_in_the_index_up_to_the_limit(self):
+        self.index(self.BAYES)
+        self.assertIn("Pages to index: 1. Next batch (1):\n  Math/Eigendecomposition.md (", self.batch())
+        for n in range(25):
+            self.write(f"Pages/P{n}.md", f"# P{n}\n")
+        self.assertIn("Pages to index: 26. Next batch (20):", self.batch())
+
+    def test_nothing_to_index(self):
+        self.index(self.BOTH)
+        self.assertIn("Nothing to index", self.batch())
+        self.assertIn("## To index\nNothing to index", self.srs("context", "maintenance").stdout)
+
+    def test_a_renamed_page_is_matched_by_its_seal_and_held_back(self):
+        self.index(self.BOTH)
+        self.srs("verify", "Math/Bayes.md")
+        self.rename("Math/Bayes.md", "Math/Bayes rule.md")
+        self.write("Math/New.md", "# New\n")
+        out = self.batch()
+        self.assertIn("[[Bayes]] (index line 6): no such page. Concepts: Bayes' theorem\n"
+                      "    may be Math/Bayes rule.md (same text)", out)
+        self.assertIn("Pages to index: 1. Next batch (1):\n  Math/New.md", out)
+        self.assertIn("Held back until the entry they may belong to is fixed: 1\n  Math/Bayes rule.md", out)
+        self.index(self.BOTH.replace("[[Bayes]]", "[[Bayes rule]]"))
+        out = self.batch()
+        self.assertNotIn("Index entries without their page", out)
+        self.assertNotIn("Held back", out)
+
+    def test_a_rename_without_a_seal_or_with_edits_is_left_to_the_model(self):
+        self.index(self.BOTH)
+        self.rename("Math/Bayes.md", "Math/Bayes rule.md")
+        out = self.batch()
+        self.assertIn("[[Bayes]] (index line 6): no such page. Concepts: Bayes' theorem\nPages to index: 1.", out)
+        self.assertIn("  Math/Bayes rule.md (", out)
+
+    def test_a_moved_page_is_matched_by_its_file_name(self):
+        self.index(self.BOTH.replace("[[Bayes]]", "[[Math/Bayes]]"))
+        self.rename("Math/Bayes.md", "Statistics/Bayes.md")
+        out = self.batch()
+        self.assertIn("    may be Statistics/Bayes.md (same file name)", out)
+        self.assertIn("Pages to index: 0.", out)
+
+    def test_both_pages_of_an_ambiguous_link_are_held_back(self):
+        self.index(self.BOTH)
+        self.write("Other/Bayes.md", "# Another Bayes\n")
+        out = self.batch()
+        self.assertIn("[[Bayes]] (index line 6): ambiguous link.", out)
+        self.assertIn("Pages to index: 0.", out)
+        self.assertIn("Held back until the entry they may belong to is fixed: 2", out)
+        self.index(self.BOTH.replace("[[Bayes]]", "[[Math/Bayes]]"))
+        self.assertIn("Next batch (1):\n  Other/Bayes.md", self.batch())
+
+    def test_a_page_with_nothing_to_index_comes_back_only_when_it_changes(self):
+        self.index(self.BOTH)
+        self.write("Todo.md", "- buy milk\n")
+        self.assertIn("  Todo.md", self.batch())
+        self.srs("begin", "maintenance")
+        self.srs("index-skip", "Todo.md")
+        self.srs("commit", "-m", "maintenance: 1 pages with nothing to index")
+        self.srs("end")
+        self.assertIn("Nothing to index", self.batch())
+        self.assertNotIn("Todo.md", srs_report(self.vault)["unindexed"])
+        self.assertIn("with nothing to index: 1.", self.srs("context", "setup").stdout)
+        self.write("Todo.md", "- a whole new idea\n")
+        self.assertIn("  Todo.md", self.batch())
+
+    def test_index_skip_refuses_indexed_pages_and_needs_a_session(self):
+        self.index(self.BAYES)
+        self.assertIn("No session is open", self.srs("index-skip", "Math/Eigendecomposition.md", check=False).stderr)
+        self.srs("begin", "maintenance")
+        self.assertIn("Already in the index", self.srs("index-skip", "Math/Bayes.md", check=False).stderr)
+        self.assertIn("Not a page", self.srs("index-skip", "Templates/t.md", check=False).stderr)
+        self.assertEqual(self.state()["skipped"], {})
+
+    def test_index_skip_drops_records_of_pages_gone_or_indexed(self):
+        self.write("Todo.md", "- buy milk\n")
+        self.write("Log.md", "- monday\n")
+        self.index(self.BOTH)
+        self.srs("begin", "maintenance")
+        self.srs("index-skip", "Todo.md")
+        (self.vault / "Todo.md").unlink()
+        self.srs("index-skip", "Log.md")
+        self.assertEqual(list(self.state()["skipped"]), ["Log.md"])
+
+    def test_a_state_from_before_the_skips_still_loads(self):
+        state = self.state()
+        state.pop("skipped")
+        (self.vault / ".srs/state.json").write_text(json.dumps(state))
+        self.assertIn("Pages to index: 2.", self.batch())
+
+    def test_pages_indexed_in_the_session_join_the_audit_batch(self):
+        self.index(self.BAYES)
+        self.srs("begin", "maintenance")
+        self.edit_via_hook("index.md", "# Index\n\n" + self.BOTH)
+        self.srs("commit", "-m", "maintenance: index 1 pages")
+        self.assertIn("### Math/Eigendecomposition.md", self.srs("audit-batch").stdout)
+
+    def test_init_says_how_many_pages_wait_for_maintenance(self):
+        other = self.tmp / "other"
+        other.mkdir()
+        out = self.srs("init", "--git-init", cwd=other).stdout
+        self.assertIn("Pages not in the index: 0.\n", out)
+        more = self.tmp / "more"
+        (more / "Notes").mkdir(parents=True)
+        (more / "Notes/a.md").write_text("# A\n")
+        out = self.srs("init", "--git-init", cwd=more).stdout
+        self.assertIn("Pages not in the index: 1. /maintenance indexes them, 20 at a time.", out)
+
+    def test_the_prose_gives_indexing_to_maintenance(self):
+        maintenance = (ROOT / "skills/maintenance/SKILL.md").read_text()
+        for text in ("srs.py index-batch", 'srs.py index-skip "<path>"', "recall:index-drafter", "## Folder map",
+                     "srs.py audit-batch", 'srs.py commit -m "maintenance: index <N> pages"'):
+            self.assertIn(text, maintenance)
+        self.assertLess(maintenance.index("srs.py index-batch"), maintenance.index("srs.py prune-seals"))
+        self.assertLess(maintenance.index("srs.py prune-seals"), maintenance.index("recall:page-auditor"))
+        setup = (ROOT / "skills/setup/SKILL.md").read_text()
+        self.assertNotIn("index-drafter", setup)
+        for command in ("index-batch", "index-skip"):
+            self.assertIn(command, srs.build_parser()._subparsers._group_actions[0].choices)
+        for folder in ("skills", "agents", "docs"):
+            for f in (ROOT / folder).rglob("*.md"):
+                self.assertNotIn("setup-batch", f.read_text(), str(f))
+        self.assertIn("Used by /maintenance", (ROOT / "agents/index-drafter.md").read_text())
+        self.assertIn("| `/setup` | Once | ", (ROOT / "README.md").read_text())
+        self.assertIn("| `/setup` | Once | ", (ROOT / "docs/usage.md").read_text())
+
+
 class FolderMapTest(VaultCase):
     MAP = ("# Folder map\n\n| Folder | Takes | Doesn't |\n| :--- | --- | ---: |\n"
            "| **Math** | numbers | code |\n| Gone/ | nothing | |\n{rows}\n## Tie-breaks\n\n- Math or Gone?\n")
@@ -1344,7 +1486,9 @@ class FolderMapTest(VaultCase):
         self.set_placement("flat")
         report = srs_report(self.vault)
         self.assertEqual((report["unmapped_folders"], report["map_rows_without_folder"]), ([], []))
-        self.assertNotIn("Folder map", self.srs("context", "setup").stdout)
+        out = self.srs("context", "maintenance").stdout
+        self.assertNotIn("Folder map: ", out)
+        self.assertNotIn("DOES NOT EXIST", out)
 
     def test_integrate_context_prints_the_map(self):
         self.write_map()
@@ -1353,20 +1497,20 @@ class FolderMapTest(VaultCase):
         self.assertIn("| **Math** | numbers | code |", out)
         self.assertIn("- Math or Gone?", out)
 
-    def test_setup_context_lists_folders_to_map_and_the_template(self):
-        out = self.srs("context", "setup").stdout
+    def test_maintenance_context_lists_folders_to_map_and_the_template(self):
+        out = self.srs("context", "maintenance").stdout
         self.assertIn("## Folder map: folders.md DOES NOT EXIST", out)
         self.assertIn("  Math/ — 2 pages: Bayes; Eigendecomposition", out)
         self.assertIn("Template:\n# Folder map", out)
         self.assertIn("at least 3 pages", out)
         self.write("Physics/Waves.md", "# Waves\n")
         self.write_map()
-        out = self.srs("context", "setup").stdout
+        out = self.srs("context", "maintenance").stdout
         self.assertIn("## Folder map: folders.md has no row for 1 folder", out)
         self.assertIn("  Physics/ — 1 page: Waves", out)
         self.assertNotIn("Template:", out)
         self.write_map("Physics")
-        self.assertIn("Folder map: folders.md (every folder with pages has a row).", self.srs("context", "setup").stdout)
+        self.assertIn("Folder map: folders.md (every folder with pages has a row).", self.srs("context", "maintenance").stdout)
 
     def test_init_takes_the_folder_map_path(self):
         other = self.tmp / "other"
@@ -1374,7 +1518,7 @@ class FolderMapTest(VaultCase):
         self.srs("init", "--git-init", "--folder-map", "Meta/Folders.md", cwd=other)
         config = json.loads((other / ".srs/config.json").read_text())
         self.assertEqual(config["paths"]["folder_map"], "Meta/Folders.md")
-        self.assertFalse((other / "Meta/Folders.md").exists())  # /setup drafts it
+        self.assertFalse((other / "Meta/Folders.md").exists())  # /maintenance drafts it
 
 
 class DiffWarningsTest(VaultCase):
@@ -2085,7 +2229,12 @@ class WelcomeTest(VaultCase):
         self.set_config(language="pt")
         self.assertEqual(self.welcome(), "Recall: nenhuma revisão agendada")
 
+    def drop_math(self):
+        """The welcome counts pages not in the index, so leave none behind."""
+        shutil.rmtree(str(self.vault / "Math"))
+
     def seal_pages(self, count, day="2026-01-01"):
+        self.drop_math()
         names = [f"P{n}" for n in range(1, count + 1)]
         for name in names:
             self.write(f"Pages/{name}.md", f"# {name}\ntext\n")
@@ -2144,6 +2293,7 @@ class WelcomeTest(VaultCase):
 
     def test_a_vault_never_checked_needs_five_pages(self):
         self.assertIsNone(self.maintenance_line(today="2026-06-01"))  # 2 indexed pages, no seals
+        self.drop_math()
         names = [f"P{n}" for n in range(1, 6)]
         for name in names:
             self.write(f"Pages/{name}.md", "text\n")
@@ -2151,6 +2301,25 @@ class WelcomeTest(VaultCase):
         self.assertEqual(self.maintenance_line(), "  /maintenance 5 pages not checked yet")
         self.set_config(language="pt")
         self.assertEqual(self.maintenance_line(), "  /maintenance 5 páginas sem verificação")
+
+    def test_pages_not_in_the_index_count_and_are_told_apart(self):
+        self.seal_pages(2)
+        for n in range(2):
+            self.write(f"Pages/Old{n}.md", "text\n")
+        self.assertIsNone(self.maintenance_line(today="2026-01-14"))
+        self.assertEqual(self.maintenance_line(today="2026-01-15"), "  /maintenance 2 pages not in the index")
+        for n in range(3):
+            self.write(f"Pages/New{n}.md", "text\n")
+        self.assertEqual(self.maintenance_line(), "  /maintenance 5 pages not in the index")
+        self.change_pages(["P1"])
+        self.assertEqual(self.maintenance_line(), "  /maintenance 1 page changed since the last check (10 days ago); "
+                                                  "5 pages not in the index")
+        self.set_config(language="pt")
+        self.assertEqual(self.maintenance_line(), "  /maintenance 1 página mudou desde a última verificação "
+                                                  "(há 10 dias); 5 páginas fora do índice")
+        self.srs("begin", "maintenance")
+        self.srs("index-skip", *[f"Pages/New{n}.md" for n in range(3)])
+        self.assertIsNone(self.maintenance_line())  # 1 changed and 2 not in the index
 
     def set_records(self, **values):
         path = self.vault / ".srs/state.json"
@@ -2172,6 +2341,7 @@ class WelcomeTest(VaultCase):
     def test_a_leech_suggests_it_and_the_parts_join(self):
         names = self.seal_pages(2)
         self.change_pages(names[:1])
+        self.write("Math/Bayes.md", "# Bayes\n")
         self.index("".join(f"## [[{n}]]\n- Concept {n}\n\n" for n in names) + "## [[Bayes]]\n- Eigenvectors\n- Eigenvalues\n")
         self.add("Eigenvectors", "Eigenvalues")
         self.set_records(lapses=8, gap={"idea": "an idea", "fails": 3})

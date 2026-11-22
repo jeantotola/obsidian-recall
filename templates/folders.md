@@ -2,7 +2,7 @@
 
 Recall reads this file when /integrate places a new page. Edit it freely: the scopes, the tie-breaks and the numbers below are yours.
 
-One row per top-level folder, with its name exactly as on disk in the first column. /maintenance reports folders without a row and rows without a folder.
+One row per top-level folder, with its name exactly as on disk in the first column. /maintenance drafts missing rows and reports rows without a folder.
 
 | Folder | What goes in | What doesn't, and where it goes |
 | --- | --- | --- |

@@ -9,8 +9,8 @@ How to use Recall day to day, and every setting. The [README](../README.md) expl
 | `/integrate [n \| file]` | After studying | Plans where the inbox blocks go, then moves them into your pages with one diff and one commit per block (or, with [agent review](#agent-review), one commit per block the judges clear). With the quiz on, it ends with one question: which concepts go into review. |
 | `/quiz` | Every day, with the quiz on | Asks about the concepts that are due. Answer in your own words. `/config` sets how many questions a day. |
 | `/promote [page or topic]` | When you have time, with the quiz on | Adds concepts from notes you already have to the quiz, such as what you wrote before Recall. |
-| `/maintenance` | Now and then | Checks that your pages match Recall's list of concepts, and reports what needs fixing. |
-| `/setup` | Once, then until your notes are covered | Configures the vault and lists the concepts your existing pages explain. |
+| `/maintenance` | Now and then, whenever the wiki changed | Lists the concepts of pages that aren't in the index yet, checks that your pages match the list, and reports what needs fixing. |
+| `/setup` | Once | Configures the vault. `/maintenance` then indexes the pages you already have. |
 | `/config [change]` | When your pace changes | Shows or changes whether the quiz is on, how many concepts you get per day, and whether `/integrate` is reviewed by you or by judge agents. You can also just ask for it in the conversation. |
 
 Commands work by their short name when nothing else uses it; otherwise type `/recall:quiz` and so on. When you open a new session in the vault, Recall tells you which of them today calls for ([Welcome message](#welcome-message)).
@@ -56,7 +56,7 @@ Recall: today 22 questions: 15 reviews, 7 new concepts
   /maintenance 6 pages changed since the last check (12 days ago)
 ```
 
-It shows only what matters: what is left if you stopped mid-quiz, the score once the quiz is done, the next quiz when there is nothing to ask, and an interrupted session as the first line. An empty inbox drops the `/integrate` line. The `/maintenance` line appears only when the command is worth running: with 5 or more pages changed or new since their last check, with any such page 14 days after the last check, or with an idea you keep missing or a leech. A changed page isn't a problem, only a reason to check. The message is in Portuguese when `language` contains "portugu" or starts with "pt", and in English otherwise. With the quiz off, it shows only the `/integrate` and `/maintenance` lines, and nothing when neither applies. It only reads the vault's files: it doesn't run git or write anything. Outside a vault with Recall set up, it prints nothing.
+It shows only what matters: what is left if you stopped mid-quiz, the score once the quiz is done, the next quiz when there is nothing to ask, and an interrupted session as the first line. An empty inbox drops the `/integrate` line. The `/maintenance` line appears only when the command is worth running: with 5 or more pages changed since their last check or not in the index yet, with any such page 14 days after the last check, or with an idea you keep missing or a leech. A changed page isn't a problem, only a reason to check. Pages not in the index are counted apart, as in `2 pages not in the index`. The message is in Portuguese when `language` contains "portugu" or starts with "pt", and in English otherwise. With the quiz off, it shows only the `/integrate` and `/maintenance` lines, and nothing when neither applies. It only reads the vault's files: it doesn't run git or write anything. Outside a vault with Recall set up, it prints nothing.
 
 ### Inbox format
 
@@ -81,7 +81,8 @@ A `#` or `##` heading opens a block, and deeper headings stay inside it. A `#` w
 | `quiz: 17/20` | `/quiz`, at the end |
 | `promote: N concepts` | `/promote` |
 | `maintenance: N pages verified` | `/maintenance` (with `, M stale seals removed` when it removed seals; with nothing to change it makes no commit) |
-| `setup: ...` | `/setup` |
+| `maintenance: index N pages` | `/maintenance`, after you approve each batch of new pages (with `, folder map` or `, fix index links` when they changed too) |
+| `setup: initialize Recall` | `/setup` |
 | `config: new_per_day 5 -> 10` | `/config`, when a value changes |
 
 Undo the last operation with `git revert HEAD`: content, index and schedule go back together.
@@ -89,6 +90,17 @@ Undo the last operation with `git revert HEAD`: content, index and schedule go b
 If a session closes in the middle of a command, the next command shows what was left uncommitted and asks whether to keep or discard it. Discarding only touches the files Claude edited, and removes folders that end up empty after deleting files created in the session.
 
 Files you edit in Obsidian while a session is open stay out of its diff and commit, and go in the next `vault: manual edits`. `srs.py adopt "<path>"` (or `--all`) adds them to the session. `/maintenance` does it on its own and says so, then reads your changes in the diff and points out any error, without fixing it.
+
+### New pages and /maintenance
+
+You can create, rename and move pages in Obsidian as you like. The next `/maintenance` brings the index and the folder map up to date before it audits anything, with one diff to approve:
+
+- **New pages** get their entries from a Haiku agent, 20 pages per round. While there are more, it asks whether to index the next batch, go on to the audit or stop, so a large vault can be indexed over several days. Nothing goes into the quiz.
+- **Renamed and moved pages** keep their entry: the script matches an entry that lost its page with the page that has the same text or the same file name, and only the link changes. Until that is settled, the page isn't indexed as new.
+- **Pages with nothing to index** (a to-do list, a log) are left out until they change. To leave one out for good, add it to `exclude`.
+- **New folders** get a row in the [folder map](#the-folder-map).
+
+Answer `ok`, ask for a change, `skip` (the audit runs with the index as it was) or `stop`. When there is nothing to bring up to date, `/maintenance` goes straight to the audit.
 
 ### Fixing what /maintenance finds
 
@@ -101,6 +113,8 @@ The report gives each item an ID (F for failures, D for the script's checks, T a
 | `srs.py remove "<Concept>" ...` | Takes concepts out of the quiz, all or none; they stay in the index |
 | `srs.py flag "<page>" --note "<what it leaves out>"` | Flags a thin page with its reason; a second flag adds its reason to the first |
 | `srs.py audit-batch "<page>" ...` | The batch to audit again for the pages given |
+| `srs.py index-batch` | Index entries without their page, and the next pages to index |
+| `srs.py index-skip "<page>" ...` | Records pages with nothing to index, so they stay out of the batch until they change |
 | `srs.py prune-seals` | Removes the seals and flags left by deleted, renamed or excluded pages, and the flags of concepts that left the index |
 
 Flags only show up in the `/maintenance` report and change nothing else. Each stays until its page is fixed and unflagged.
@@ -129,7 +143,7 @@ Claude Code can suggest your next reply in the input line, and during a quiz tha
 
 ## The folder map
 
-With `new_page_placement` set to `folders`, `/integrate` picks a folder for each new page. Folder names alone often leave it guessing, so `/setup` drafts `folders.md`, a map of what each top-level folder takes:
+With `new_page_placement` set to `folders`, `/integrate` picks a folder for each new page. Folder names alone often leave it guessing, so `/maintenance` drafts `folders.md`, a map of what each top-level folder takes:
 
 ```markdown
 | Folder | What goes in | What doesn't, and where it goes |
@@ -146,10 +160,10 @@ With `new_page_placement` set to `folders`, `/integrate` picks a folder for each
 - New top-level folder: only when at least 3 pages that fit no folder are expected.
 ```
 
-- One row per top-level folder, its name exactly as on disk in the first column. `/maintenance` reports folders without a row and rows without a folder.
+- One row per top-level folder, its name exactly as on disk in the first column. `/maintenance` reports rows without a folder.
 - The map is yours: edit the scopes, the tie-breaks and the rules for new folders, including the 3-page minimum, whenever you like. `/integrate` reads the current file each time.
 - When `/integrate` creates a top-level folder, it adds the folder's row to the map in the same diff.
-- Run `/setup` again to draft the rows that are missing.
+- `/maintenance` drafts the rows that are missing, and renames a row whose folder was renamed, in the same diff as the index.
 
 ## Scheduling
 
@@ -214,7 +228,7 @@ To check retention, run `python3 <plugin folder>/scripts/srs.py stats` in the va
 | `limits.page_max_chars` | `6000` | Page size checked by `/maintenance` |
 | `limits.description_max_chars` | `60` | Length of index descriptions |
 | `limits.maintenance_batch` | `20` | Pages audited per `/maintenance` |
-| `limits.setup_batch` | `20` | Pages indexed per `/setup` round |
+| `limits.setup_batch` | `20` | Pages indexed per round of `/maintenance` (the name comes from when `/setup` did it) |
 
 Parameters of `anki`, under `scheduling.anki`. The defaults are Anki's own.
 
