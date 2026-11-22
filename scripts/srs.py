@@ -625,8 +625,11 @@ def load_state(v: Vault) -> dict:
     state.setdefault("concepts", {})
     state.setdefault("next_order", 1)
     flags = state.setdefault("flags", {})
-    flags.setdefault("thin", {})
+    thin = flags.setdefault("thin", {})
     flags.setdefault("misplaced", {})
+    for rel, flag in list(thin.items()):
+        if not isinstance(flag, dict):  # before 0.23.0 a thin flag was only its day
+            thin[rel] = {"day": flag, "notes": []}
     return state
 
 
@@ -1313,7 +1316,8 @@ def unrecorded_warning(repo: Repo, session: dict) -> list:
         return []
     return [f"Warning: changed but not recorded by this session, so left out of the diff: {', '.join(paths)}.",
             "If you wrote them, write them again with Edit or Write: only those tools are recorded. "
-            "If the user edited them in Obsidian, leave them: they are committed later as manual edits."]
+            "If the user edited them in Obsidian during this session and wants them in its commit, run "
+            "`srs.py adopt` with their paths; otherwise leave them: they are committed later as manual edits."]
 
 
 def interrupted_report(repo: Repo, session: dict) -> str:
@@ -1446,6 +1450,25 @@ def stale_seals(v: Vault, verified: dict) -> list:
     return sorted(rel for rel in verified if rel not in pages)
 
 
+def stale_flags(v: Vault, state: dict, idx: Index) -> list:
+    """Flags left behind when a page was deleted, renamed or excluded, or a misplaced
+    concept left the index: ("thin", page) and ("misplaced", concept) pairs."""
+    pages = set(content_pages(v))
+    owners = idx.by_key()
+    out = [("thin", rel) for rel in sorted(state["flags"]["thin"]) if rel not in pages]
+    out += [("misplaced", name) for name, f in sorted(state["flags"]["misplaced"].items())
+            if f.get("page") not in pages or norm_key(name) not in owners]
+    return out
+
+
+def temporary_mature(v: Vault, state: dict) -> list:
+    """Concepts queued as temporary whose interval has reached the mature interval:
+    the user may know them well enough to retire them from the quiz."""
+    mature_at = int(v.sched["mature_interval"])
+    return [(name, int(rec.get("interval") or 0)) for name, rec in sorted(state["concepts"].items())
+            if rec.get("temporary") and int(rec.get("interval") or 0) >= mature_at]
+
+
 def run_checks(v: Vault) -> dict:
     idx, _ = load_index(v)
     state = load_state(v)
@@ -1459,11 +1482,13 @@ def run_checks(v: Vault) -> dict:
         "unindexed": [p for p in pages if p not in indexed],
         "unverified": [],
         "stale_seals": stale_seals(v, verified),
+        "stale_flags": stale_flags(v, state, idx),
         "thin": sorted(state["flags"]["thin"].items()),
         "misplaced": sorted((name, f.get("page", ""), f.get("to", ""), f.get("day", ""))
                             for name, f in state["flags"]["misplaced"].items()),
         "leeches": [],
         "stuck_gaps": [],
+        "temporary_mature": temporary_mature(v, state),
         "index": idx,
     }
     report.update(index_checks(v, idx))
@@ -1505,6 +1530,11 @@ def format_checks(v: Vault, report: dict, only=None) -> list:
         name, page, to, day = x
         return f"{name}: defined on {page}" + (f", belongs in {to}" if to else "") + f" (flagged {day})"
 
+    def thin_line(x):
+        rel, flag = x
+        notes = [n["note"] for n in flag.get("notes", []) if n.get("note")]
+        return f"{rel} (flagged {flag.get('day')})" + (f": {'; '.join(notes)}" if notes else ": no note")
+
     sections = [
         ("over_size", f"Pages over {limits['page_max_chars']} characters", lambda x: f"{x[0]} ({x[1]} characters)"),
         ("duplicates", "Concept names used on more than one page", lambda x: f"{x[0]}: {', '.join(x[1])}"),
@@ -1516,10 +1546,14 @@ def format_checks(v: Vault, report: dict, only=None) -> list:
         ("unindexed", "Pages not in the index (index them with /setup)", lambda x: x),
         ("unverified", "Indexed pages without a valid seal", lambda p: p.path),
         ("stale_seals", "Stale seals (the file is gone or is no longer a page; /maintenance removes them)", lambda x: x),
-        ("thin", "Pages flagged as thin", lambda x: f"{x[0]} (flagged {x[1]})"),
+        ("stale_flags", "Stale flags (the page is gone, or the concept left the index; /maintenance removes them)",
+         lambda x: f"{x[0]}: {x[1]}"),
+        ("thin", "Pages flagged as thin", thin_line),
         ("misplaced", "Concepts flagged as misplaced", misplaced_line),
         ("leeches", f"Leeches ({v.leech_at}+ lapses)", lambda x: f"{x[0]} ({x[1]} lapses)"),
         ("stuck_gaps", f"Gaps that won't close ({GAP_STUCK_FAILS}+ fails)", lambda x: f"{x[0]}: {x[1]} ({x[2]} fails)"),
+        ("temporary_mature", f"Temporary concepts now mature ({v.sched['mature_interval']}+ days; retire them?)",
+         lambda x: f"{x[0]} (interval {x[1]} days)"),
         ("unmapped_folders", f"Folders with pages but no row in the folder map ({v.folder_map_rel})", lambda x: x),
         ("map_rows_without_folder", f"Folder map rows that name no top-level folder ({v.folder_map_rel})",
          lambda x: x),
@@ -1715,6 +1749,28 @@ def cmd_diff(args):
         print("No changes to review.")
         return
     print(render_diff(v, repo, changed, paths))
+
+
+def cmd_adopt(args):
+    """Bring into the session files the user edited in Obsidian while it was open, so its diff
+    shows them and its commit holds them, instead of a later `vault: manual edits`."""
+    v = open_vault(args)
+    repo = require_repo(v)
+    session = require_session(v)
+    candidates = unrecorded_edits(repo, session)
+    if args.all:
+        paths = candidates
+    else:
+        if not args.paths:
+            raise SrsError('Give the paths, or --all: srs.py adopt "<path>" ... or srs.py adopt --all.')
+        paths = [norm_rel(p) for p in args.paths]
+        refused = [p for p in paths if p not in candidates]
+        if refused:
+            raise SrsError("Not an unrecorded edit of this session (unchanged, already recorded, or a hidden "
+                           "folder): " + ", ".join(refused), 2)
+    for rel in paths:
+        touch(v, rel)
+    print(f"Added to this session: {', '.join(paths) or '-'}")
 
 
 def cmd_commit(args):
@@ -1998,13 +2054,35 @@ def cmd_add(args):
             skipped.append(name)
             continue
         state["concepts"][name] = new_record(args.source, v.today, state["next_order"])
+        if args.temporary:
+            state["concepts"][name]["temporary"] = True
         state["next_order"] += 1
         added.append(name)
     if added:
         save_state(v, state)
-    print(f"Queued {len(added)}: {', '.join(added) or '-'}."
+    kind = " as temporary" if args.temporary and added else ""
+    print(f"Queued {len(added)}{kind}: {', '.join(added) or '-'}."
           + (f" Already scheduled: {', '.join(skipped)}." if skipped else ""))
     print(queue_summary(state, v))
+
+
+def cmd_temporary(args):
+    """Mark scheduled concepts as temporary, or clear the mark: /maintenance offers to retire
+    a temporary concept from the quiz once it is mature."""
+    v = open_vault(args)
+    state = load_state(v)
+    names = [find_state_name(state, n) for n in args.concepts]
+    missing = [raw for raw, name in zip(args.concepts, names) if name is None]
+    if missing:
+        raise SrsError("Not in the review schedule: " + ", ".join(missing), 2)
+    for name in names:
+        if args.off:
+            state["concepts"][name].pop("temporary", None)
+        else:
+            state["concepts"][name]["temporary"] = True
+    save_state(v, state)
+    print(f"{', '.join(names)}: " + ("no longer temporary." if args.off else
+          "temporary; /maintenance offers to retire each one from the quiz once it is mature."))
 
 
 def cmd_update(args):
@@ -2062,12 +2140,87 @@ def cmd_rename(args):
 def cmd_remove(args):
     v = open_vault(args)
     state = load_state(v)
-    name = find_state_name(state, args.concept)
-    if name is None:
-        raise SrsError(f"'{args.concept}' is not in the review schedule.", 2)
-    del state["concepts"][name]
+    names = [find_state_name(state, n) for n in args.concepts]
+    missing = [raw for raw, name in zip(args.concepts, names) if name is None]
+    if missing:
+        raise SrsError("Not in the review schedule (nothing was removed): " + ", ".join(missing), 2)
+    names = list(dict.fromkeys(names))
+    for name in names:
+        del state["concepts"][name]
     save_state(v, state)
-    print(f"Removed {name} from the review schedule.")
+    print(f"Removed {', '.join(names)} from the review schedule.")
+
+
+def cmd_merge(args):
+    """Fold a duplicate into its owner. When the owner isn't scheduled, it takes over the
+    duplicate's history (as a rename would); when it is, it keeps its own and the duplicate goes."""
+    v = open_vault(args)
+    state = load_state(v)
+    dup = find_state_name(state, args.duplicate)
+    if dup is None:
+        raise SrsError(f"'{args.duplicate}' is not in the review schedule: there is no history to merge. "
+                       "Just fix the index.", 2)
+    idx, _ = load_index(v)
+    owners = idx.by_key()
+    if norm_key(args.owner) not in owners:
+        raise SrsError(f"'{args.owner}' is not in the index: add the owner there first.", 2)
+    owner = owners[norm_key(args.owner)][0].name
+    if norm_key(owner) == norm_key(dup):
+        raise SrsError("The duplicate and the owner are the same concept.", 2)
+    rec = state["concepts"].pop(dup)
+    state["flags"]["misplaced"].pop(dup, None)
+    kept = find_state_name(state, owner)
+    if kept is None:
+        state["concepts"][owner] = rec
+        print(f"{owner} takes over the history of {dup} ({describe_record(rec)}).")
+    else:
+        print(f"Removed {dup} from the review schedule; {kept} keeps its own history "
+              f"({describe_record(state['concepts'][kept])}).")
+    save_state(v, state)
+
+
+def show_lines(v: Vault, idx: Index, state: dict, raw: str) -> list:
+    entries = idx.by_key().get(norm_key(raw), [])
+    name = find_state_name(state, raw) or (entries[0].name if entries else raw)
+    out = [name]
+    for e in entries:
+        where = f"[[{e.page.link}]]" + (f" ({e.page.path})" if e.page.path and e.page.path != e.page.link else "")
+        out.append(f"  Index: {where}" + (f" — {e.desc}" if e.desc else ""))
+    if not entries:
+        out.append("  Index: not in the index")
+    rec = state["concepts"].get(find_state_name(state, raw) or "")
+    if rec is None:
+        out.append("  Quiz: not scheduled (index only)")
+    else:
+        parts = [describe_record(rec), f"due {rec.get('due') or '-'}", f"reps {rec.get('reps') or 0}"]
+        if rec.get("temporary"):
+            parts.append("temporary")
+        out.append("  Quiz: " + ", ".join(parts))
+        if rec.get("gap"):
+            out.append(f"  Gap: {rec['gap']['idea']} ({rec['gap'].get('fails', 1)} fails)")
+        if rec.get("focus"):
+            out.append(f"  Focus: {rec['focus']}")
+    flag = state["flags"]["misplaced"].get(name)
+    if flag:
+        out.append(f"  Flagged as misplaced on {flag.get('page')}" + (f", belongs in {flag['to']}" if flag.get("to") else ""))
+    return out
+
+
+def cmd_show(args):
+    """Where a concept lives and what the quiz holds for it: what removing or merging it would cost."""
+    v = open_vault(args)
+    idx, _ = load_index(v)
+    state = load_state(v)
+    unknown = []
+    for i, raw in enumerate(args.concepts):
+        lines = show_lines(v, idx, state, raw)
+        if not idx.by_key().get(norm_key(raw)) and find_state_name(state, raw) is None:
+            unknown.append(raw)
+        if i:
+            print()
+        print("\n".join(lines))
+    if unknown:
+        raise SystemExit(2)
 
 
 def cmd_flag(args):
@@ -2088,7 +2241,11 @@ def cmd_flag(args):
         save_state(v, state)
         print(f"Flagged {name} as misplaced on {rel}; /maintenance will report it.")
         return
-    state["flags"]["thin"][rel] = v.today.isoformat()
+    # A second flag on the same page keeps the first day and adds its note, so no reason is lost.
+    flag = state["flags"]["thin"].setdefault(rel, {"day": v.today.isoformat(), "notes": []})
+    note = short(args.note or "", 160)
+    if note and note not in [n.get("note") for n in flag["notes"]]:
+        flag["notes"].append({"day": v.today.isoformat(), "note": note})
     save_state(v, state)
     print(f"Flagged {rel} as thin; /maintenance will report it.")
 
@@ -2435,6 +2592,15 @@ def cmd_prune_seals(args):
         write_json(v.srs / "verified.json", verified)
         touch(v, f"{SRS_DIR}/verified.json")
     print(f"Removed {plural(len(stale), 'stale seal')}: {', '.join(stale) or '-'}")
+    # Flags go stale the same way: a renamed page leaves its thin flag on the old path.
+    idx, _ = load_index(v)
+    state = load_state(v)
+    flags = stale_flags(v, state, idx)
+    for kind, key in flags:
+        del state["flags"][kind][key]
+    if flags:
+        save_state(v, state)
+        print(f"Removed {plural(len(flags), 'stale flag')}: {', '.join(f'{k}: {key}' for k, key in flags)}")
 
 
 def cmd_inbox(args):
@@ -3719,6 +3885,56 @@ def context_config(v: Vault) -> list:
     return out
 
 
+def audit_batch_lines(v: Vault, report: dict, targets=None) -> list:
+    """The batch for the page auditor: the unsealed pages, or the `targets` given, without
+    over-size pages and pages with shared names, which the auditor can't pass."""
+    over = {p for p, _ in report["over_size"]}
+    dup_pages = set()
+    for entries in report["index"].by_key().values():
+        if len(entries) > 1:
+            dup_pages.update(e.page.path for e in entries if e.page.path)
+    out, left_out = [], []
+    if targets is None:
+        pages = report["unverified"]
+    else:
+        pages = []
+        for target in targets:
+            page = find_index_page(report["index"], target)
+            if page is None or page.status != "ok":
+                left_out.append(f"{target}: not an indexed page")
+            elif page not in pages:
+                pages.append(page)
+    batch = []
+    for page in pages:
+        if page.path in over or page.path in dup_pages:
+            if targets is not None:
+                left_out.append(f"{page.path}: over the size limit" if page.path in over
+                                else f"{page.path}: shares a concept name with another page")
+            continue
+        batch.append(page)
+    if targets is None:
+        batch = batch[: v.limits["maintenance_batch"]]
+    out.append(f"## Batch to audit ({len(batch)} pages; over-size pages and pages with shared names are left out)")
+    out.append("Each page shows its vault path, then its absolute path in backticks. Open pages by the absolute path.")
+    for page in batch:
+        out.append(f"### {page.path}")
+        out.append(f"Absolute path: `{(v.root / page.path).as_posix()}`")
+        out += [f"    {line}" for line in page.entry_text().splitlines()]
+    if left_out:
+        out.append("Left out:")
+        out += [f"  - {x}" for x in left_out]
+    return out
+
+
+def cmd_audit_batch(args):
+    """The batch to audit again, for the pages changed during a session."""
+    v = open_vault(args)
+    report = run_checks(v)
+    for line in audit_batch_lines(v, report, args.pages or None):
+        print(line)
+    print(f"Full index: {(v.root / v.index_rel).as_posix()}")
+
+
 def context_maintenance(v: Vault) -> list:
     report = run_checks(v)
     out = context_header(v, "maintenance")
@@ -3726,20 +3942,8 @@ def context_maintenance(v: Vault) -> list:
     out.append("")
     out.append("## Deterministic checks")
     out += format_checks(v, report)
-    over = {p for p, _ in report["over_size"]}
-    dup_pages = set()
-    for entries in report["index"].by_key().values():
-        if len(entries) > 1:
-            dup_pages.update(e.page.path for e in entries if e.page.path)
-    batch = [p for p in report["unverified"] if p.path not in over and p.path not in dup_pages]
-    batch = batch[: v.limits["maintenance_batch"]]
     out.append("")
-    out.append(f"## Batch to audit ({len(batch)} pages; over-size pages and pages with shared names are left out)")
-    out.append("Each page shows its vault path, then its absolute path in backticks. Open pages by the absolute path.")
-    for page in batch:
-        out.append(f"### {page.path}")
-        out.append(f"Absolute path: `{(v.root / page.path).as_posix()}`")
-        out += [f"    {line}" for line in page.entry_text().splitlines()]
+    out += audit_batch_lines(v, report)
     out.append("")
     out.append(f"Full index: {v.index_rel}")
     out.append("")
@@ -3812,6 +4016,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("command")
     p.set_defaults(func=cmd_begin)
     sub.add_parser("diff", help="show the session's uncommitted changes").set_defaults(func=cmd_diff)
+    p = sub.add_parser("adopt", help="bring into the session files the user edited in Obsidian while it was open")
+    p.add_argument("paths", nargs="*")
+    p.add_argument("--all", action="store_true", help="every unrecorded edit the diff warns about")
+    p.set_defaults(func=cmd_adopt)
     p = sub.add_parser("commit", help="commit what the session touched")
     p.add_argument("-m", "--message", required=True)
     p.add_argument("--review", metavar="ID", help="commit a block that the agent review cleared (adds its verdicts to the message)")
@@ -3841,8 +4049,14 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("today", help="today's score").set_defaults(func=cmd_today)
     p = sub.add_parser("add", help="queue concepts for review")
     p.add_argument("--source", choices=["integrate", "promote"], required=True)
+    p.add_argument("--temporary", action="store_true",
+                   help="for now only: /maintenance offers to retire them once they are mature")
     p.add_argument("concepts", nargs="+")
     p.set_defaults(func=cmd_add)
+    p = sub.add_parser("temporary", help="mark scheduled concepts as temporary, or clear the mark with --off")
+    p.add_argument("concepts", nargs="+")
+    p.add_argument("--off", action="store_true")
+    p.set_defaults(func=cmd_temporary)
     p = sub.add_parser("update", help="mark new content for a concept in review")
     p.add_argument("concept")
     p.add_argument("--focus", required=True)
@@ -3851,11 +4065,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("old")
     p.add_argument("new")
     p.set_defaults(func=cmd_rename)
-    p = sub.add_parser("remove", help="remove a concept from the schedule")
-    p.add_argument("concept")
+    p = sub.add_parser("remove", help="remove concepts from the schedule (the index keeps them)")
+    p.add_argument("concepts", nargs="+")
     p.set_defaults(func=cmd_remove)
+    p = sub.add_parser("merge", help="fold a scheduled duplicate into its owner, keeping a history")
+    p.add_argument("duplicate")
+    p.add_argument("owner")
+    p.set_defaults(func=cmd_merge)
+    p = sub.add_parser("show", help="where concepts live in the index and what the quiz holds for them")
+    p.add_argument("concepts", nargs="+")
+    p.set_defaults(func=cmd_show)
     p = sub.add_parser("flag", help="flag a page as too thin for good questions, or a concept as misplaced on it")
     p.add_argument("page")
+    p.add_argument("--note", help="for a thin page: what it leaves out, in a few words")
     p.add_argument("--misplaced", metavar="CONCEPT", help="flag this concept as defined on the wrong page")
     p.add_argument("--to", help="with --misplaced: where the concept belongs (a page or a subject)")
     p.set_defaults(func=cmd_flag)
@@ -3881,8 +4103,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("unseal", help="remove seals, e.g. from the other page of a duplicate")
     p.add_argument("pages", nargs="+")
     p.set_defaults(func=cmd_unseal)
-    sub.add_parser("prune-seals", help="remove seals of files that are gone or no longer pages").set_defaults(
+    sub.add_parser("prune-seals", help="remove seals and flags of files that are gone or no longer pages").set_defaults(
         func=cmd_prune_seals)
+    p = sub.add_parser("audit-batch", help="the batch to audit for the pages given (default: the unsealed ones)")
+    p.add_argument("pages", nargs="*")
+    p.set_defaults(func=cmd_audit_batch)
     p = sub.add_parser("inbox", help="list, show or remove inbox blocks")
     p.add_argument("action", choices=["list", "show", "remove"])
     p.add_argument("ids", nargs="*")

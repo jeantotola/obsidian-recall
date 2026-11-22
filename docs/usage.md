@@ -88,6 +88,24 @@ Undo the last operation with `git revert HEAD`: content, index and schedule go b
 
 If a session closes in the middle of a command, the next command shows what was left uncommitted and asks whether to keep or discard it. Discarding only touches the files Claude edited, and removes folders that end up empty after deleting files created in the session.
 
+Files you edit in Obsidian while a session is open stay out of its diff and commit, and go in the next `vault: manual edits`. `srs.py adopt "<path>"` (or `--all`) adds them to the session. `/maintenance` does it on its own and says so, then reads your changes in the diff and points out any error, without fixing it.
+
+### Fixing what /maintenance finds
+
+The report gives each item an ID (F for failures, D for the script's checks, T and M for the auditor's notes, G for gaps, L for leeches, R for temporary concepts), so you can answer "F1 ok, T2 no, M1 later". Before closing, it lists what was done, declined, postponed and left open, and offers to audit again the pages changed in the session. The script's tools behind the fixes:
+
+| Command | What it does |
+| --- | --- |
+| `srs.py show "<Concept>" ...` | Where the concept is in the index, and whether it is in the quiz, with its interval, lapses and gap: what removing it would lose |
+| `srs.py merge "<duplicate>" "<owner>"` | Folds a scheduled duplicate into the concept that keeps it: an owner outside the quiz takes over the history, a scheduled owner keeps its own |
+| `srs.py remove "<Concept>" ...` | Takes concepts out of the quiz, all or none; they stay in the index |
+| `srs.py temporary "<Concept>" ... [--off]` | Marks scheduled concepts as temporary, such as a tool's commands while you learn it; `/maintenance` offers to retire them once they reach the mature interval |
+| `srs.py flag "<page>" --note "<what it leaves out>"` | Flags a thin page with its reason; a second flag adds its reason to the first |
+| `srs.py audit-batch "<page>" ...` | The batch to audit again for the pages given |
+| `srs.py prune-seals` | Removes the seals and flags left by deleted, renamed or excluded pages, and the flags of concepts that left the index |
+
+Flags only show up in the `/maintenance` report and change nothing else. Each stays until its page is fixed and unflagged.
+
 ### Suggestions during /quiz
 
 Claude Code can suggest your next reply in the input line, and during a quiz that suggestion can show the answer. So `/quiz` turns suggestions off in this vault by setting `promptSuggestionEnabled` to false in the vault's `.claude/settings.local.json`, and leaves it off. Recall never commits this file. Other projects keep their own setting.

@@ -2411,11 +2411,44 @@ class FlagTest(VaultCase):
 
     def test_thin_flag_still_works(self):
         self.srs("flag", "Math/Bayes.md")
-        self.assertEqual(self.flags()["thin"], {"Math/Bayes.md": "2026-01-10"})
+        self.assertEqual(self.flags()["thin"], {"Math/Bayes.md": {"day": "2026-01-10", "notes": []}})
         self.assertEqual(self.flags()["misplaced"], {})
         self.assertIn("Pages flagged as thin: 1", self.srs("check").stdout)
         self.srs("unflag", "Math/Bayes.md")
         self.assertEqual(self.flags()["thin"], {})
+
+    def test_thin_flags_keep_every_reason(self):
+        self.srs("flag", "Math/Bayes.md", "--note", "never says what a prior is")
+        self.srs("flag", "Math/Bayes.md", "--note", "no example of an update", today="2026-01-12")
+        self.srs("flag", "Math/Bayes.md", "--note", "no example of an update", today="2026-01-13")
+        self.assertEqual(self.flags()["thin"]["Math/Bayes.md"], {"day": "2026-01-10", "notes": [
+            {"day": "2026-01-10", "note": "never says what a prior is"},
+            {"day": "2026-01-12", "note": "no example of an update"}]})
+        self.assertIn("Math/Bayes.md (flagged 2026-01-10): never says what a prior is; no example of an update",
+                      self.srs("check").stdout)
+
+    def test_a_thin_flag_from_before_notes_still_loads(self):
+        path = self.vault / ".srs/state.json"
+        state = json.loads(path.read_text(encoding="utf-8"))
+        state["flags"]["thin"] = {"Math/Bayes.md": "2026-01-01"}
+        path.write_text(json.dumps(state), encoding="utf-8")
+        self.assertIn("Math/Bayes.md (flagged 2026-01-01): no note", self.srs("check").stdout)
+        self.srs("flag", "Math/Bayes.md", "--note", "thin")
+        self.assertEqual(self.flags()["thin"]["Math/Bayes.md"],
+                         {"day": "2026-01-01", "notes": [{"day": "2026-01-10", "note": "thin"}]})
+
+    def test_flags_of_a_renamed_page_or_a_removed_concept_go_stale(self):
+        self.srs("flag", "Math/Bayes.md", "--note", "thin")
+        self.srs("flag", "Math/Eigendecomposition.md", "--misplaced", "Matrix norm")
+        (self.vault / "Math/Bayes.md").rename(self.vault / "Math/Bayes rule.md")
+        self.index("## [[Eigendecomposition]]\n- Eigenvectors\n")
+        self.assertEqual(srs_report(self.vault)["stale_flags"],
+                         [("thin", "Math/Bayes.md"), ("misplaced", "Matrix norm")])
+        self.srs("begin", "maintenance")
+        out = self.srs("prune-seals").stdout
+        self.assertIn("Removed 2 stale flags: thin: Math/Bayes.md, misplaced: Matrix norm", out)
+        self.assertEqual(self.flags(), {"thin": {}, "misplaced": {}})
+        self.assertIn(".srs/state.json", self.srs("diff").stdout)
 
     def test_misplaced_flag_is_stored_reported_and_removed(self):
         out = self.srs("flag", "Math/Eigendecomposition.md", "--misplaced", "matrix norm", "--to", "Linear algebra")
@@ -2456,6 +2489,128 @@ class FlagTest(VaultCase):
     def test_unflagging_an_unknown_concept_changes_nothing(self):
         out = self.srs("unflag", "Math/Eigendecomposition.md", "--misplaced", "Matrix norm")
         self.assertIn("was not flagged as misplaced", out.stdout)
+
+
+class MaintenanceToolsTest(VaultCase):
+    """The script's side of fixing what /maintenance finds: what a concept costs, merging,
+    removing in bulk, the user's own edits in a session, a second audit, temporary concepts."""
+
+    INDEX = ("## [[Eigendecomposition]]\n- Eigenvectors\n- Span (MLflow) — One step of a trace\n\n"
+             "## [[Bayes]]\n- Bayes' theorem\n- Span\n- Prior\n")
+
+    def setUp(self):
+        super().setUp()
+        self.index(self.INDEX)
+
+    def state(self):
+        return json.loads((self.vault / ".srs/state.json").read_text(encoding="utf-8"))
+
+    def set_interval(self, name, days):
+        path = self.vault / ".srs/state.json"
+        state = json.loads(path.read_text(encoding="utf-8"))
+        state["concepts"][name].update(phase="review", interval=days, due="2026-02-01")
+        path.write_text(json.dumps(state), encoding="utf-8")
+
+    def test_show_tells_index_and_quiz_apart(self):
+        self.srs("add", "--source", "promote", "Span (MLflow)")
+        self.set_interval("Span (MLflow)", 20)
+        out = self.srs("show", "span (mlflow)", "Span").stdout
+        self.assertIn("Span (MLflow)\n  Index: [[Eigendecomposition]] (Math/Eigendecomposition.md) — One step of a trace",
+                      out)
+        self.assertIn("  Quiz: review, interval 20 days, lapses 0, due 2026-02-01, reps 0", out)
+        self.assertIn("Span\n  Index: [[Bayes]] (Math/Bayes.md)\n  Quiz: not scheduled (index only)", out)
+        bad = self.srs("show", "Ghost", check=False)
+        self.assertEqual(bad.returncode, 2)
+        self.assertIn("Index: not in the index", bad.stdout)
+
+    def test_merge_hands_the_history_to_an_unscheduled_owner(self):
+        self.srs("add", "--source", "promote", "Span (MLflow)")
+        self.set_interval("Span (MLflow)", 20)
+        out = self.srs("merge", "Span (MLflow)", "span").stdout
+        self.assertIn("Span takes over the history of Span (MLflow) (review, interval 20 days", out)
+        concepts = self.state()["concepts"]
+        self.assertNotIn("Span (MLflow)", concepts)
+        self.assertEqual(concepts["Span"]["interval"], 20)
+
+    def test_merge_into_a_scheduled_owner_keeps_the_owners_history(self):
+        self.srs("add", "--source", "promote", "Span (MLflow)", "Span")
+        self.set_interval("Span", 3)
+        out = self.srs("merge", "Span (MLflow)", "Span").stdout
+        self.assertIn("Removed Span (MLflow) from the review schedule; Span keeps its own history", out)
+        self.assertEqual(sorted(self.state()["concepts"]), ["Span"])
+        self.assertEqual(self.state()["concepts"]["Span"]["interval"], 3)
+
+    def test_merge_refuses_what_it_cannot_do(self):
+        self.srs("add", "--source", "promote", "Span (MLflow)")
+        for args, message in ((("Prior", "Span"), "not in the review schedule"),
+                              (("Span (MLflow)", "Ghost"), "not in the index"),
+                              (("Span (MLflow)", "span (mlflow)"), "the same concept")):
+            bad = self.srs("merge", *args, check=False)
+            self.assertEqual(bad.returncode, 2, args)
+            self.assertIn(message, bad.stderr)
+        self.assertEqual(sorted(self.state()["concepts"]), ["Span (MLflow)"])
+
+    def test_remove_takes_several_concepts_or_none(self):
+        self.srs("add", "--source", "promote", "Span (MLflow)", "Span", "Prior")
+        bad = self.srs("remove", "Span", "Ghost", check=False)
+        self.assertEqual(bad.returncode, 2)
+        self.assertIn("nothing was removed", bad.stderr)
+        self.assertEqual(len(self.state()["concepts"]), 3)
+        out = self.srs("remove", "span (mlflow)", "Span").stdout
+        self.assertIn("Removed Span (MLflow), Span from the review schedule.", out)
+        self.assertEqual(sorted(self.state()["concepts"]), ["Prior"])
+
+    def test_adopt_brings_the_users_edits_into_the_session(self):
+        self.srs("begin", "maintenance")
+        self.edit_via_hook("index.md", (self.vault / "index.md").read_text() + "- Posterior\n")
+        self.write("Math/Bayes.md", "# Bayes\nedited in Obsidian\n")
+        self.write("Math/Eigendecomposition.md", "# Eigen\nalso edited\n")
+        self.assertIn("left out of the diff: Math/Bayes.md, Math/Eigendecomposition.md", self.srs("diff").stdout)
+        bad = self.srs("adopt", "Math/Nope.md", check=False)
+        self.assertEqual(bad.returncode, 2)
+        self.assertIn("Not an unrecorded edit", bad.stderr)
+        self.assertIn("Added to this session: Math/Bayes.md", self.srs("adopt", "Math/Bayes.md").stdout)
+        diff = self.srs("diff").stdout
+        self.assertIn("+edited in Obsidian", diff)
+        self.assertIn("left out of the diff: Math/Eigendecomposition.md.", diff)
+        self.srs("adopt", "--all")
+        self.assertNotIn("left out of the diff", self.srs("diff").stdout)
+        self.srs("commit", "-m", "maintenance: fixes")
+        self.assertEqual(self.git("status", "--porcelain").strip(), "")
+        self.srs("end")
+
+    def test_adopt_needs_a_session_and_paths(self):
+        self.assertNotEqual(self.srs("adopt", "--all", check=False).returncode, 0)
+        self.srs("begin", "maintenance")
+        self.assertNotEqual(self.srs("adopt", check=False).returncode, 0)
+        self.srs("end")
+
+    def test_audit_batch_lists_the_pages_given(self):
+        self.srs("verify", "Bayes")
+        out = self.srs("audit-batch", "Math/Bayes.md", "Ghost.md").stdout
+        self.assertIn("## Batch to audit (1 pages", out)
+        self.assertIn("### Math/Bayes.md\nAbsolute path: `", out)
+        self.assertIn("    - Bayes' theorem", out)
+        self.assertNotIn("### Math/Eigendecomposition.md", out)
+        self.assertIn("Left out:\n  - Ghost.md: not an indexed page", out)
+        self.assertIn("Full index: ", out)
+        self.assertIn("### Math/Eigendecomposition.md", self.srs("audit-batch").stdout)
+
+    def test_temporary_concepts_come_back_once_mature(self):
+        out = self.srs("add", "--source", "integrate", "--temporary", "Prior").stdout
+        self.assertIn("Queued 1 as temporary: Prior.", out)
+        self.srs("add", "--source", "integrate", "Span")
+        self.srs("temporary", "span")
+        self.assertTrue(self.state()["concepts"]["Span"]["temporary"])
+        self.set_interval("Prior", 21)
+        self.set_interval("Span", 20)
+        self.assertEqual(srs_report(self.vault)["temporary_mature"], [("Prior", 21)])
+        self.assertIn("Temporary concepts now mature (21+ days; retire them?): 1\n  - Prior (interval 21 days)",
+                      self.srs("check").stdout)
+        self.assertIn("temporary", self.srs("show", "Prior").stdout)
+        self.srs("temporary", "Prior", "--off")
+        self.assertNotIn("temporary", self.state()["concepts"]["Prior"])
+        self.assertNotEqual(self.srs("temporary", "Ghost", check=False).returncode, 0)
 
 
 class IntegrateOrderTest(unittest.TestCase):
@@ -3235,9 +3390,29 @@ class QuizOffDocsTest(unittest.TestCase):
         self.assertIn("A concept the page only uses, without explaining it, doesn't fail B", text)
         self.assertIn("FAIL <path> — C?:", text)
         maintenance = (ROOT / "skills/maintenance/SKILL.md").read_text()
-        self.assertIn('for each T note, run `srs.py flag "<path>"`', maintenance)
-        self.assertIn("an M note is flagged only on the user's approval", maintenance)
-        self.assertIn("run `srs.py flag \"<path>\"` for each T note", (ROOT / "skills/promote/SKILL.md").read_text())
+        self.assertIn("they become flags only on the user's approval", maintenance)
+        self.assertIn('srs.py flag "<page path>" --note "<what it leaves out>"', maintenance)
+        promote = (ROOT / "skills/promote/SKILL.md").read_text()
+        self.assertIn('flag only the ones the user approves, with `srs.py flag "<path>" --note', promote)
+
+    def test_maintenance_uses_the_scripts_tools_for_its_fixes(self):
+        maintenance = (ROOT / "skills/maintenance/SKILL.md").read_text()
+        for command in ("srs.py show", 'srs.py merge "<duplicate>" "<owner>"', 'srs.py adopt "<path>"',
+                        'srs.py audit-batch "<path>"', "srs.py remove", "srs.py prune-seals"):
+            self.assertIn(command, maintenance)
+        for command in ("show", "merge", "adopt", "audit-batch", "temporary"):
+            self.assertIn(command, srs.build_parser()._subparsers._group_actions[0].choices)
+
+    def test_the_auditor_notes_only_what_the_user_can_act_on(self):
+        text = (ROOT / "agents/page-auditor.md").read_text()
+        self.assertIn("only when that page is in the index and its subject covers the concept", text)
+        self.assertIn("When no page in the index fits, write no note.", text)
+        self.assertIn("Don't note a missing detail, a longer list", text)
+        self.assertIn("Before writing C or C?, open the other page", text)
+        self.assertIn("A concept whose name carries a qualifier for a tool or a field", text)
+        # The judgment of tool concepts for the quiz is the user's own, not the plugin's.
+        for name in ("integrate", "promote"):
+            self.assertNotIn("(tool)", (ROOT / f"skills/{name}/SKILL.md").read_text(), name)
 
 
 class ReviewAgentsTest(unittest.TestCase):

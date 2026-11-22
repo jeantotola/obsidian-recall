@@ -67,7 +67,7 @@ Then it goes block by block, groups from the newest to the oldest. The model wri
  A = PDP⁻¹, with the eigenvalues on the diagonal of D.
 ```
 
-You approve it, ask for a change, skip the block or stop. With the quiz on, the run ends with one list: the concepts it touched, each with a suggestion to put it in the quiz or only keep it in the index.
+You approve it, ask for a change, skip the block or stop. With the quiz on, the run ends with one list: the concepts it touched, each with a suggestion to put it in the quiz or only keep it in the index. A concept worth asking only for a while, such as a tool's commands while you learn it, can go in as temporary: `/maintenance` offers to retire it once you know it.
 
 The index is a Markdown page that lists, for each page, the concepts the page explains:
 
@@ -120,7 +120,7 @@ The quiz tests your notes as well as your memory. A concept you keep failing, or
 
 ### Maintenance
 
-`/maintenance` starts with the script's checks: pages over the size limit, names used twice, links that don't resolve, scheduled concepts missing from the index, pages not yet indexed. Then a Haiku agent reads up to 20 pages and judges each one against its index entry: every listed concept is explained, nothing important is missing, and no concept duplicates another page's under a different name. It also notes thin pages and misplaced concepts, which become flags without failing the page. A page that passes gets a seal, which stores the git hash of the page and a hash of its index entry. Any edit breaks the seal, whether it comes through Recall or from Obsidian, without anyone having to remember to remove it, so each run audits only what changed.
+`/maintenance` starts with the script's checks: pages over the size limit, names used twice, links that don't resolve, scheduled concepts missing from the index, pages not yet indexed. Then a Haiku agent reads up to 20 pages and judges each one against its index entry: every listed concept is explained, nothing important is missing, and no concept duplicates another page's under a different name. It also notes thin pages and misplaced concepts, which become flags, with their reasons, only if you approve them, and never fail the page. Every item in the report has an ID you answer by, and the session closes with the list of what was done, declined and left open. A page that passes gets a seal, which stores the git hash of the page and a hash of its index entry. Any edit breaks the seal, whether it comes through Recall or from Obsidian, without anyone having to remember to remove it, so each run audits only what changed.
 
 When you open a session in the vault, a hook prints what is waiting, without calling the model:
 
