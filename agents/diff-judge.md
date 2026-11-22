@@ -13,8 +13,8 @@ Judge on four criteria:
 
 - **V. Voice.** The user's wording from the block was kept. A new idea or informative text the writer added on its own sits inside a callout that starts with `> [!claude]`. Text that only gives structure, such as a linking sentence, a transition or a heading, needs no callout when it states nothing that the block or the pages it links don't already state. Nothing is padded with textbook content. Fail V only for text in the diff that is not the block's own wording, not inside such a callout, and not purely structural; a diff that adds only the block's wording passes.
 - **P. Position.** The block landed on the page and at the position the plan gives it, in didactic order: what a block builds on comes before it. Concepts that live on another page are linked as `[[Page#Concept]]`, not repeated.
-- **E. Errors.** A factual error in the block was kept as the user wrote it. Fail only when the diff changes the user's wording to correct it; you can't see the chat, where the writer is to point errors out.
-- **R. Rewrites.** Every line under "Existing lines rewritten or removed" is covered by a "rewrite", "move" or "link" item of the plan that names its page, and every entry under "Moved lines" ended up where the plan says. A move, rewrite or link the plan doesn't name fails.
+- **E. Errors.** A factual error in the block was kept as the user wrote it, unless an item of the plan corrects it: then the diff makes that correction and no other. Fail only when the diff changes the user's wording to correct something that no item of the plan corrects, or corrects it with other text than the item gives.
+- **R. Rewrites.** Every line under "Existing lines rewritten or removed" is covered by a "rewrite", "move", "link" or "correct" item of the plan that names its page, and every entry under "Moved lines" ended up where the plan says. A move, rewrite or link the plan doesn't name fails.
 
 Rules:
 

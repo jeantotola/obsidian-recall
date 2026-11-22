@@ -39,7 +39,7 @@ The quiz also tests your notes, and part of what it finds needs only a reading o
 By default you approve every diff. With `integrate_review` set to `agent` (ask `/config`), `/integrate` still asks you to approve the plan, and then commits each block without showing you its diff, once the block passes two kinds of check:
 
 - **The script's checks**, which cost nothing: the index warnings, links that don't resolve or point to a heading that doesn't exist, and existing text that was rewritten or removed on a page the plan doesn't name.
-- **Judge agents that only read.** `diff-judge` (Haiku, always) checks that your wording was kept and that any idea or fact of the model's own is in a callout, that the block landed where the plan says, that an error in your text was not corrected silently, and that every rewrite or move is in the plan. `concept-judge` (Sonnet, only when the block adds a heading or an index concept) checks that each new concept sits on the page that owns it, isn't a duplicate, and is in the index. They return a verdict and never text; Claude reads it, revises once if it agrees, and the judges don't look again.
+- **Judge agents that only read.** `diff-judge` (Haiku, always) checks that your wording was kept and that any idea or fact of the model's own is in a callout, that the block landed where the plan says, that an error in your text was corrected only as the plan says, and that every rewrite or move is in the plan. `concept-judge` (Sonnet, only when the block adds a heading or an index concept) checks that each new concept sits on the page that owns it, isn't a duplicate, and is in the index. They return a verdict and never text; Claude reads it, revises once if it agrees, and the judges don't look again.
 
 The manual mode is the default. The first time you run `/integrate`, it asks once whether to keep it, and your answer is saved. After that, while you stay manual, it reminds you now and then that the automatic mode exists: at the end of a run, once you have approved at least 10 blocks and 14 days have passed since your last answer. Answer "not now" and the next reminder waits twice as long (14, 28, then 41 days at most). Switch any time with `/config`.
 
@@ -56,7 +56,7 @@ Recall: today 22 questions: 15 reviews, 7 new concepts
   /maintenance 6 pages changed since the last check (12 days ago)
 ```
 
-It shows only what matters: what is left if you stopped mid-quiz, the score once the quiz is done, the next quiz when there is nothing to ask, and an interrupted session as the first line. An empty inbox drops the `/integrate` line. The `/maintenance` line appears only when the command is worth running: with 5 or more pages changed since their last check or not in the index yet, with any such page 14 days after the last check, or with an idea you keep missing or a leech. A changed page isn't a problem, only a reason to check. Pages not in the index are counted apart, as in `2 pages not in the index`. The message is in Portuguese when `language` contains "portugu" or starts with "pt", and in English otherwise. With the quiz off, it shows only the `/integrate` and `/maintenance` lines, and nothing when neither applies. It only reads the vault's files: it doesn't run git or write anything. Outside a vault with Recall set up, it prints nothing.
+It shows only what matters: what is left if you stopped mid-quiz, the score once the quiz is done, the next quiz when there is nothing to ask, and an interrupted session as the first line. An empty inbox drops the `/integrate` line. Questions you postponed are counted in the `/maintenance` line, but don't bring it up. That line appears only when the command is worth running: with 5 or more pages changed since their last check or not in the index yet, with any such page 14 days after the last check, or with an idea you keep missing or a leech. A changed page isn't a problem, only a reason to check. Pages not in the index are counted apart, as in `2 pages not in the index`. The message is in Portuguese when `language` contains "portugu" or starts with "pt", and in English otherwise. With the quiz off, it shows only the `/integrate` and `/maintenance` lines, and nothing when neither applies. It only reads the vault's files: it doesn't run git or write anything. Outside a vault with Recall set up, it prints nothing.
 
 ### Inbox format
 
@@ -77,8 +77,9 @@ A `#` or `##` heading opens a block, and deeper headings stay inside it. A `#` w
 | --- | --- |
 | `vault: manual edits` | Any command, first, if you changed files in Obsidian since the last commit |
 | `integrate: <block title>` | `/integrate`, after your approval of each block; with agent review, after the judges clear it, and the message body lists their verdicts |
+| `integrate: corrections` | `/integrate`, for the corrections you approved in the plan or at the end |
 | `integrate: queue N concepts` | `/integrate`, after the review question |
-| `quiz: 17/20` | `/quiz`, at the end |
+| `quiz: 17/20` | `/quiz`, at the end, with the typos you approved; other corrections get a commit of their own |
 | `promote: N concepts` | `/promote` |
 | `maintenance: N pages verified` | `/maintenance` (with `, M stale seals removed` when it removed seals; with nothing to change it makes no commit) |
 | `maintenance: index N pages` | `/maintenance`, after you approve each batch of new pages (with `, folder map` or `, fix index links` when they changed too) |
@@ -89,7 +90,7 @@ Undo the last operation with `git revert HEAD`: content, index and schedule go b
 
 If a session closes in the middle of a command, the next command shows what was left uncommitted and asks whether to keep or discard it. Discarding only touches the files Claude edited, and removes folders that end up empty after deleting files created in the session.
 
-Files you edit in Obsidian while a session is open stay out of its diff and commit, and go in the next `vault: manual edits`. `srs.py adopt "<path>"` (or `--all`) adds them to the session. `/maintenance` does it on its own and says so, then reads your changes in the diff and points out any error, without fixing it.
+Files you edit in Obsidian while a session is open stay out of its diff and commit, and go in the next `vault: manual edits`. `srs.py adopt "<path>"` (or `--all`) adds them to the session. `/maintenance` does it on its own and says so, then reads your changes in the diff and looks for errors in them.
 
 ### New pages and /maintenance
 
@@ -104,20 +105,49 @@ Answer `ok`, ask for a change, `skip` (the audit runs with the index as it was) 
 
 ### Fixing what /maintenance finds
 
-The report gives each item an ID (F for failures, D for the script's checks, T and M for the auditor's notes, G for gaps, L for leeches), so you can answer "F1 ok, T2 no, M1 later". Before closing, it lists what was done, declined, postponed and left open, and offers to audit again the pages changed in the session. The script's tools behind the fixes:
+The report gives each item an ID (Q for questions you postponed before, E for errors, F for failures, D for the script's checks, T and M for the auditor's notes, G for gaps, L for leeches), so you can answer "F1 ok, E2 no, M1 later". The auditor's findings are leads: the model opens the page, and looks in the index's git history for concepts you removed, before showing you anything. What you answer decides the seal:
+
+- **Corrected:** the page is sealed without another audit.
+- **No**, to a failure: the page is sealed as it is, so the same question doesn't come back while the page stays as it is.
+- **Later:** the page waits without a seal, and the question is shown again in the next run, without another audit, until the page changes.
+
+Each batch of 20 pages is decided before the next one is audited, and you choose whether to go on. Before closing, it lists what was done, declined, postponed and left open. The script's tools behind the fixes:
 
 | Command | What it does |
 | --- | --- |
-| `srs.py show "<Concept>" ...` | Where the concept is in the index, and whether it is in the quiz, with its interval, lapses and gap: what removing it would lose |
+| `srs.py show "<Concept>" ...` | Where the concept is in the index, or when it was removed from it, and whether it is in the quiz, with its interval, lapses and gap: what removing it would lose |
 | `srs.py merge "<duplicate>" "<owner>"` | Folds a scheduled duplicate into the concept that keeps it: an owner outside the quiz takes over the history, log included; a scheduled owner keeps its own |
 | `srs.py remove "<Concept>" ...` | Takes concepts out of the quiz, all or none; they stay in the index |
-| `srs.py flag "<page>" --note "<what it leaves out>"` | Flags a thin page with its reason; a second flag adds its reason to the first |
-| `srs.py audit-batch "<page>" ...` | The batch to audit again for the pages given |
+| `srs.py verify "<page>" ...` | Seals pages with nothing pending |
+| `srs.py reseal "<page>" ...` | Keeps the seal of pages the session only corrected; run before the commit |
+| `srs.py open "<page>" "<question>"` | Keeps a question you postponed; `--close` drops it |
+| `srs.py flag "<page>" --misplaced "<Concept>" --to "<where it belongs>"` | Flags a concept defined on the wrong page |
+| `srs.py audit-batch ["<page>" ...]` | The next batch to audit, or the batch for the pages given |
 | `srs.py index-batch` | Index entries without their page, and the next pages to index |
 | `srs.py index-skip "<page>" ...` | Records pages with nothing to index, so they stay out of the batch until they change |
-| `srs.py prune-seals` | Removes the seals and flags left by deleted, renamed or excluded pages, and the flags of concepts that left the index |
+| `srs.py prune-seals` | Moves the seals of renamed pages; removes the seals and flags left by deleted or excluded pages, the flags of concepts that left the index and the open questions of pages that changed |
 
 Flags only show up in the `/maintenance` report and change nothing else. Each stays until its page is fixed and unflagged.
+
+A seal doesn't mind changes a reader doesn't see (link targets behind a shown text, `%% comments %%`, spacing), and a renamed page keeps it. When a sealed page changes, the auditor gets the lines that changed since the seal and judges only those; with half the words changed or more, it audits the whole page.
+
+### Errors in your pages
+
+`/integrate`, `/maintenance` and `/promote` look for errors in the pages they read, and `/quiz`, to keep its pace, only takes note of the ones it happens to see. The model points out what is wrong, with the text it would put instead. You decide, and nothing you were doing stops for it: in `/integrate` corrections are items of the plan, in `/quiz` they wait for the end, in `/maintenance` they are in the report. A Haiku agent never proposes a correction, and a session on Haiku doesn't look for errors.
+
+- **Wrong:** it is corrected everywhere it appears, index included.
+- **Ambiguous:** a few words that you approve settle it.
+- **Incomplete:** when what is missing misleads, or leaves nothing to ask in the quiz, a callout asks without answering. You resolve it when you study the subject; `/integrate` brings it up when a block answers it, and nothing else does.
+
+  ```text
+  > [!question] Incomplete
+  > Do two processes share the offset after a fork?
+  ```
+
+- **Left as it is:** an exception, asked on its own after a "no", that leaves a comment next to the passage, hidden in reading view, so it isn't raised again: `%% checked: deliberate simplification %%`.
+- **Not now:** it comes back as each command says.
+
+When an error touches the idea a quiz question would ask about, or only shows up with your answer, nothing is recorded and the concept comes back tomorrow. Typos are one item; in the quiz, they go in the same commit as the score.
 
 ### Suggestions during /quiz
 
@@ -187,7 +217,8 @@ Both share the rest:
 - A fail also records the idea you missed, called a gap. The concept's next questions test that idea until you pass it at least 3 days after the previous answer, and then the gap disappears. Gaps change what is asked, never the dates. `/maintenance` lists the ones that won't close.
 - Retry, off by default (`/config` turns it on): after a wrong answer to an open question, `/quiz` says only that it is wrong and lets you try once more, without hints. Right on that try is a retry: no lapse and no step toward a leech, the interval stays the same (or drops to the days you set, `scheduling.retry.interval`), and the gap opens as on a fail. A wrong answer to a closed question, one whose few possible answers make "wrong" point to the other, is a fail. Retries don't count as passes in the score or in `srs.py stats`.
 - A contested verdict is corrected with `srs.py amend "<Concept>" pass|fail|retry`, on the same study day only. The concept goes back to how it was before the answer and the answer is applied again with the new result; the next day, the answer is final.
-- New content for a concept in review brings it back the next day with a question on the new part. A pass keeps the interval; a fail is a normal lapse.
+- New content for a concept in review, or a correction of its core idea, brings it back the next day with a question on the new part, again after 40% of its interval, and then when the interval is over: on days 0, 4 and 10 for a 10-day interval. The first two passes keep the interval; the third question is a normal review. A fail is a normal lapse. Intervals of 1 to 3 days skip the middle question.
+- A concept whose page turns out to have an error is put off to the next day without an answer (`srs.py defer`, or `srs.py amend "<Concept>" void` when it was already answered).
 - Up to 20 concepts a day: learning, relearning and updated concepts first, then reviews (most overdue first), then new concepts, at most 5 a day and only if there is room.
 - A new concept waits until the next day. The study day starts at 4 a.m., so a late-night session counts as the same day.
 - A new concept also waits while the concept on the line just above or below it in the index is in the day's list, so concepts written side by side don't start, and stay, on the same days. Its slot goes to the next new concept.
@@ -272,7 +303,7 @@ your-vault/
 └── .srs/
     ├── config.json
     ├── quiz-rules.md
-    ├── state.json        review schedule
+    ├── state.json        review schedule, flags and open questions
     ├── verified.json     seals
     ├── log.csv           one line per answer
     ├── review/           agent review: the plan, the judges' verdicts, blocks waiting for you (never committed)

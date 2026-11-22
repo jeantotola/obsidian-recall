@@ -280,11 +280,18 @@ class RetryTest(unittest.TestCase):
                                self.sched("thirds"), "X")
         self.assertEqual((rec["phase"], rec["due"], rec["introduced"]), ("learning", "2026-01-03", "2026-01-02"))
 
-    def test_hold_is_cleared_and_the_interval_kept(self):
+    def test_hold_goes_on_and_the_interval_is_kept(self):
         held = srs.apply_update(self.review(), D("2026-01-20"), "new part")
         rec = srs.apply_answer(held, "retry", D("2026-01-21"), self.sched("anki"), "X")
+        self.assertEqual((rec["interval"], rec["lapses"], rec["hold"], rec["due"]), (20, 1, 2, "2026-01-29"))
+        rec = srs.apply_answer(rec, "retry", D("2026-01-29"), self.sched("anki"), "X")
         self.assertNotIn("hold", rec)
-        self.assertEqual((rec["interval"], rec["lapses"]), (20, 1))
+        self.assertEqual((rec["interval"], rec["lapses"], rec["due"]), (20, 1, "2026-02-10"))
+
+    def test_on_hold_a_retry_counts_as_a_pass_whatever_the_retry_interval(self):
+        held = srs.apply_update(self.review(), D("2026-01-20"), "new part")
+        rec = srs.apply_answer(held, "retry", D("2026-01-21"), self.sched("thirds", 3), "X")
+        self.assertEqual((rec["interval"], rec["due"]), (20, "2026-01-29"))
 
     def test_bad_interval_is_refused(self):
         for bad in (0, "long", True, -2):
@@ -305,15 +312,55 @@ class UpdateTest(unittest.TestCase):
         self.assertEqual((rec["phase"], rec["due"], rec["focus"]), ("learning", "2026-02-02", "more"))
         self.assertNotIn("hold", rec)
 
-    def test_a_pass_on_hold_keeps_the_interval(self):
+    def held(self, interval, **extra):
+        rec = dict({"phase": "review", "interval": interval, "ease": 2.5, "due": "2026-03-01", "last": "2026-01-20",
+                    "lapses": 0}, **extra)
+        return srs.apply_update(rec, D("2026-02-01"), "new part")
+
+    def test_two_passes_keep_the_interval_and_the_third_one_grows_it(self):
         for algorithm in ("anki", "thirds"):
-            rec = {"phase": "review", "interval": 40, "ease": 2.1, "due": "2026-03-01", "last": "2026-01-20"}
-            rec = srs.apply_update(rec, D("2026-02-01"), "new part")
-            rec = srs.apply_answer(rec, True, D("2026-02-02"), sched(algorithm), "X")
-            self.assertEqual((rec["phase"], rec["interval"], rec["due"], rec["focus"]),
-                             ("review", 40, "2026-03-14", None), algorithm)
+            with self.subTest(algorithm=algorithm):
+                config = sched(algorithm, fuzz=0) if algorithm == "thirds" else sched(algorithm, fuzz=False)
+                rec = srs.apply_answer(self.held(10), True, D("2026-02-02"), config, "X")
+                self.assertEqual((rec["interval"], rec["due"], rec["focus"], rec["hold"]),
+                                 (10, "2026-02-06", "new part", 2))
+                rec = srs.apply_answer(rec, True, D("2026-02-06"), config, "X")
+                self.assertEqual((rec["interval"], rec["due"], rec["focus"]), (10, "2026-02-12", None))
+                self.assertNotIn("hold", rec)
+                self.assertEqual(rec["ease"], 2.5)
+                rec = srs.apply_answer(rec, True, D("2026-02-12"), config, "X")
+                self.assertEqual((rec["interval"], rec["due"]), (25, "2026-03-09"))
+
+    def test_late_answers_push_what_is_left_of_the_interval(self):
+        rec = srs.apply_answer(self.held(10), True, D("2026-02-04"), sched("thirds"), "X")
+        self.assertEqual(rec["due"], "2026-02-08")
+        rec = srs.apply_answer(rec, True, D("2026-02-20"), sched("thirds"), "X")
+        self.assertEqual((rec["interval"], rec["due"]), (10, "2026-02-26"))
+        late = srs.apply_answer(rec, True, D("2026-02-28"), sched("thirds", fuzz=0), "X")  # two days late: from 11
+        self.assertEqual(late["interval"], 28)
+
+    def test_short_intervals_have_no_second_question(self):
+        for interval, due in ((1, "2026-02-03"), (2, "2026-02-04"), (3, "2026-02-05")):
+            rec = srs.apply_answer(self.held(interval), True, D("2026-02-02"), sched("thirds"), "X")
+            self.assertEqual((rec["interval"], rec["due"], rec["focus"]), (interval, due, None))
             self.assertNotIn("hold", rec)
-            self.assertEqual(rec["ease"], 2.1)
+        rec = srs.apply_answer(self.held(4), True, D("2026-02-02"), sched("thirds"), "X")
+        self.assertEqual((rec["due"], rec["hold"]), ("2026-02-04", 2))
+
+    def test_new_content_in_the_middle_starts_again(self):
+        rec = srs.apply_answer(self.held(10), True, D("2026-02-02"), sched("thirds"), "X")
+        rec = srs.apply_update(rec, D("2026-02-03"), "more")
+        self.assertEqual((rec["hold"], rec["due"], rec["focus"], rec["interval"]), (1, "2026-02-04", "more", 10))
+
+    def test_a_fail_on_the_second_question_is_a_normal_lapse_and_ends_it(self):
+        rec = srs.apply_answer(self.held(10), True, D("2026-02-02"), sched("thirds"), "X")
+        rec = srs.apply_answer(rec, False, D("2026-02-06"), sched("thirds"), "X")
+        self.assertEqual((rec["phase"], rec["pending"], rec["lapses"], rec["focus"]), ("relearning", 3, 1, None))
+        self.assertNotIn("hold", rec)
+
+    def test_a_hold_from_before_0_26_goes_on_as_the_first_question(self):
+        rec = srs.apply_answer(dict(self.held(10), hold=True), True, D("2026-02-02"), sched("thirds"), "X")
+        self.assertEqual((rec["hold"], rec["due"]), (2, "2026-02-06"))
 
     def test_a_fail_on_hold_is_a_normal_lapse(self):
         base = {"phase": "review", "interval": 40, "ease": 2.5, "due": "2026-03-01", "last": "2026-01-20", "lapses": 0}
@@ -422,6 +469,12 @@ class NeighborTest(unittest.TestCase):
         concepts["a"] = {"phase": "review", "due": "2026-01-10", "interval": 3}
         items, _ = srs.daily_list(self.make(concepts), sched(), D("2026-01-10"), self.neighbors())
         self.assertEqual(items, ["a", "e"])
+
+    def test_the_place_of_a_deferred_concept_goes_to_another(self):
+        concepts = self.new("a", "c", "e")
+        concepts["a"]["deferred"] = "2026-01-10"
+        items, _ = srs.daily_list(self.make(concepts), sched(new_per_day=2), D("2026-01-10"), self.neighbors())
+        self.assertEqual(items, ["c", "e"])
 
     def test_reviews_never_wait(self):
         concepts = {n: {"phase": "review", "due": "2026-01-10", "interval": 3} for n in "abcd"}
@@ -1239,6 +1292,99 @@ class AmendTest(VaultCase):
         self.assertIn("pass", self.srs("amend", "--help").stdout)
 
 
+class DeferTest(VaultCase):
+    """A concept whose page has an error is put off to tomorrow, without an answer."""
+
+    DAY = "2026-01-12"
+
+    def setUp(self):
+        super().setUp()
+        self.index("## [[Eigendecomposition]]\n- Eigenvectors\n\n## [[Bayes]]\n- Bayes' theorem\n")
+        self.srs("add", "--source", "integrate", "Eigenvectors", "Bayes' theorem")
+
+    def rec(self, name="Eigenvectors"):
+        return json.loads((self.vault / ".srs/state.json").read_text(encoding="utf-8"))["concepts"][name]
+
+    def log(self):
+        return (self.vault / ".srs/log.csv").read_text(encoding="utf-8")
+
+    def test_it_leaves_today_and_comes_back_tomorrow(self):
+        out = self.srs("defer", "eigenvectors", today=self.DAY).stdout
+        self.assertIn("Eigenvectors: not asked today, back tomorrow.\nNext question: 1/1.", out)
+        self.assertNotIn("Eigenvectors", self.srs("due", today=self.DAY).stdout)
+        self.assertNotIn("Eigenvectors", self.log())
+        self.assertEqual(self.srs("record", "Eigenvectors", "pass", today=self.DAY, check=False).returncode, 2)
+        self.assertIn("Eigenvectors", self.srs("due", today="2026-01-13").stdout)
+        self.srs("record", "Eigenvectors", "pass", today="2026-01-13")
+        self.assertNotIn("deferred", self.rec())
+
+    def one_new_a_day(self):
+        path = self.vault / ".srs/config.json"
+        config = json.loads(path.read_text())
+        config["scheduling"]["new_per_day"] = 1
+        path.write_text(json.dumps(config))
+        names = ["Eigenvectors", "Bayes' theorem"]
+        return names if "1. Eigenvectors" in self.srs("due", today=self.DAY).stdout else names[::-1]
+
+    def test_another_concept_takes_its_place(self):
+        first, second = self.one_new_a_day()
+        out = self.srs("defer", first, today=self.DAY).stdout
+        self.assertIn(f"Takes its place in today's list; ask it after the others:\n- {second} — new", out)
+        self.assertIn("   Page: Math/", out)
+        self.assertIn("Next question: 1/1.", out)
+
+    def test_another_concept_takes_the_place_of_an_undone_answer(self):
+        first, second = self.one_new_a_day()
+        self.srs("record", first, "pass", today=self.DAY)
+        out = self.srs("amend", first, "void", today=self.DAY).stdout
+        self.assertIn(f"- {second} — new", out)
+        self.assertIn("Next question: 1/1.", out)
+
+    def test_bad_calls(self):
+        self.assertEqual(self.srs("defer", "Ghost", today=self.DAY, check=False).returncode, 2)
+        self.assertIn("not in today's list", self.srs("defer", "Eigenvectors", check=False).stderr)
+        self.srs("record", "Eigenvectors", "pass", today=self.DAY)
+        self.assertIn("void", self.srs("defer", "Eigenvectors", today=self.DAY, check=False).stderr)
+
+    def test_void_undoes_the_answer(self):
+        before, log = self.rec(), self.log()
+        self.srs("record", "Eigenvectors", "fail", "--gap", "x", "--question", "q", today=self.DAY)
+        out = self.srs("amend", "Eigenvectors", "void", today=self.DAY).stdout
+        self.assertIn("Eigenvectors: today's answer undone, back tomorrow.", out)
+        self.assertEqual(self.rec(), dict(before, deferred=self.DAY))
+        self.assertEqual(self.log(), log)
+        self.assertIn("Score: 0/0", self.srs("today", today=self.DAY).stdout)
+        self.assertNotIn("Eigenvectors", self.srs("due", today=self.DAY).stdout)
+
+    def test_void_keeps_the_other_answers(self):
+        self.srs("record", "Eigenvectors", "pass", today=self.DAY)
+        self.srs("record", "Bayes' theorem", "pass", today=self.DAY)
+        self.srs("amend", "Eigenvectors", "void", today=self.DAY)
+        self.assertIn("Score: 1/1", self.srs("today", today=self.DAY).stdout)
+        self.assertTrue(self.log().endswith("Bayes' theorem,pass,new,0\n") or
+                        self.log().endswith("Bayes' theorem,pass,new,0\r\n"), self.log())
+        self.assertEqual(self.srs("amend", "Eigenvectors", "void", today=self.DAY, check=False).returncode, 2)
+
+    def test_void_takes_no_gap(self):
+        self.srs("record", "Eigenvectors", "pass", today=self.DAY)
+        self.assertEqual(self.srs("amend", "Eigenvectors", "void", "--gap", "x", today=self.DAY, check=False).returncode, 2)
+
+    def test_a_question_on_new_content_is_logged_apart(self):
+        self.srs("record", "Eigenvectors", "pass", today=self.DAY)
+        self.srs("update", "Eigenvectors", "--focus", "new part", today=self.DAY)
+        self.srs("record", "Eigenvectors", "pass", today="2026-01-13")
+        self.assertIn("2026-01-13,Eigenvectors,pass,update,1", self.log())
+        self.assertIn("no reviews yet", self.srs("stats", today="2026-01-14").stdout)
+        self.srs("record", "Eigenvectors", "pass", today="2026-01-14")
+        self.assertIn("2026-01-14,Eigenvectors,pass,review,1", self.log())
+
+    def test_a_deferred_concept_with_new_content_comes_back_tomorrow(self):
+        self.srs("record", "Eigenvectors", "pass", today=self.DAY)
+        self.srs("defer", "Eigenvectors", today="2026-01-13")
+        self.srs("update", "Eigenvectors", "--focus", "fixed", today="2026-01-13")
+        self.assertIn("Focus (new content): fixed", self.srs("due", today="2026-01-14").stdout)
+
+
 class ChecksTest(VaultCase):
     def test_checks_seals_and_exclusions(self):
         self.index("\n".join([
@@ -1654,6 +1800,273 @@ class StaleSealsTest(VaultCase):
         self.assertIn("  - Math/Gone.md", self.srs("context", "maintenance").stdout)
 
 
+class VisibleTextTest(unittest.TestCase):
+    def same(self, a, b):
+        self.assertEqual(srs.visible_text(a), srs.visible_text(b))
+
+    def differ(self, a, b):
+        self.assertNotEqual(srs.visible_text(a), srs.visible_text(b))
+
+    def test_what_the_reader_does_not_see_is_left_out(self):
+        self.same("A [[Old#Part|goal test]].\n", "A [[1- New#Other|goal test]].\n")
+        self.same("[[Hill Climbing]] ends.", "[[Local Search#Hill Climbing|Hill Climbing]] ends.")
+        self.same("See [docs](https://a.com/x).", "See [docs](https://b.com/y).")
+        self.same("one  two\n\n\nthree\n", "one two\n\nthree")
+        self.same("text %% checked: on purpose %% more", "text more")
+
+    def test_what_the_reader_sees_counts(self):
+        self.differ("[[Old name]]", "[[New name]]")
+        self.differ("![[a.png]]", "![[b.png]]")
+        self.differ("# Title\ntext", "# Title text")
+        self.differ("f[x](y) grows", "f[x](z) grows")
+        self.differ("> [!question] Incomplete\n> Why?", "")
+
+    def test_code_is_kept_as_it_is(self):
+        self.differ("```python\nif x:\n    y\n```", "```python\nif x:\n  y\n```")
+        self.differ("```\n%%time\na\n%%\n```", "```\n```")
+
+
+class SealTest(VaultCase):
+    """What a seal ignores, what it compares, and what the user's answers do to it."""
+
+    INDEX = "## [[Eigendecomposition]]\n- Eigenvectors\n\n## [[Bayes]]\n- Bayes' theorem\n"
+    PAGE = "# Bayes\n" + "\n".join(f"Line {n} of the page says one thing about the theorem." for n in range(12)) + "\n"
+
+    def setUp(self):
+        super().setUp()
+        self.index(self.INDEX)
+        self.write("Math/Bayes.md", self.PAGE)
+        self.srs("begin", "maintenance")
+        self.srs("verify", "Bayes", "Eigendecomposition")
+        self.srs("commit", "-m", "maintenance: 2 pages verified")
+
+    def unverified(self):
+        return [p.path for p in srs_report(self.vault)["unverified"]]
+
+    def seals(self):
+        return json.loads((self.vault / ".srs/verified.json").read_text(encoding="utf-8"))
+
+    def make_legacy(self):
+        """A seal as 0.25.0 wrote it."""
+        seals = {rel: {k: r[k] for k in ("blob", "entry", "day")} for rel, r in self.seals().items()}
+        (self.vault / ".srs/verified.json").write_text(json.dumps(seals), encoding="utf-8")
+
+    def test_a_seal_survives_what_the_reader_does_not_see(self):
+        self.write("Math/Bayes.md", self.PAGE.replace("\n", "\n\n") + "%% checked: simplification %%\n")
+        self.assertEqual(self.unverified(), [])
+        self.make_legacy()
+        self.assertEqual(self.unverified(), [])  # the sealed text comes from git
+        self.write("Math/Bayes.md", self.PAGE.replace("Line 3", "Line three"))
+        self.assertEqual(self.unverified(), ["Math/Bayes.md"])
+
+    def test_the_batch_shows_only_what_changed(self):
+        self.write("Math/Bayes.md", self.PAGE.replace("Line 3 of", "Line three of").replace(
+            "Line 5 of the page says one thing about the theorem.\n", ""))
+        self.index(self.INDEX + "- Prior\n")
+        out = self.srs("audit-batch").stdout
+        self.assertIn("Changed since its seal (2026-01-10); judge only what these changes affect:", out)
+        self.assertIn("    -Line 3 of the page", out)
+        self.assertIn("    +Line three of the page", out)
+        self.assertIn("    -Line 5 of the page", out)
+        self.assertIn("    Entry:\n    +Prior", out)
+        self.assertNotIn("Line 7", out)
+
+    def test_a_rewritten_page_is_audited_in_full(self):
+        self.write("Math/Bayes.md", "# Bayes\nAll of this is new.\n" * 6)
+        out = self.srs("audit-batch").stdout
+        self.assertIn("### Math/Bayes.md", out)
+        self.assertNotIn("Changed since its seal", out)
+
+    def test_a_page_never_sealed_or_lost_to_git_is_audited_in_full(self):
+        self.srs("unseal", "Bayes")
+        self.assertNotIn("Changed since its seal", self.srs("audit-batch").stdout)
+        self.srs("verify", "Bayes")
+        seals = self.seals()
+        seals["Math/Bayes.md"].update(blob="0" * 40, text="x")
+        (self.vault / ".srs/verified.json").write_text(json.dumps(seals), encoding="utf-8")
+        out = self.srs("audit-batch").stdout
+        self.assertIn("### Math/Bayes.md", out)
+        self.assertNotIn("Changed since its seal", out)
+
+    def test_a_legacy_seal_whose_entry_changed_is_audited_in_full(self):
+        self.make_legacy()
+        self.index(self.INDEX + "- Prior\n")
+        out = self.srs("audit-batch").stdout
+        self.assertIn("### Math/Bayes.md", out)
+        self.assertNotIn("Changed since its seal", out)
+
+    def test_changed_share_counts_words(self):
+        self.assertEqual(srs.changed_share("a b c d", "a b c d"), 0)
+        self.assertEqual(srs.changed_share("a b c d", "a b x y"), 0.5)
+        self.assertEqual(srs.changed_share("", "a"), 1)
+
+    def test_the_next_batch_is_announced(self):
+        config = json.loads((self.vault / ".srs/config.json").read_text())
+        config["limits"]["maintenance_batch"] = 1
+        (self.vault / ".srs/config.json").write_text(json.dumps(config))
+        self.srs("unseal", "Bayes", "Eigendecomposition")
+        self.assertIn("Waiting for the next batch: 1 page", self.srs("audit-batch").stdout)
+
+    def test_a_correction_keeps_the_seal(self):
+        self.edit_via_hook("Math/Bayes.md", self.PAGE.replace("Line 3", "Line three"))
+        self.edit_via_hook("index.md", "# Index\n\n" + self.INDEX.replace("- Bayes' theorem", "- Bayes' theorem — rule"))
+        self.assertEqual(self.unverified(), ["Math/Bayes.md"])
+        self.assertIn("Kept the seal of 1: Math/Bayes.md", self.srs("reseal", "Math/Bayes.md").stdout)
+        self.assertEqual(self.unverified(), [])
+        self.srs("commit", "-m", "maintenance: fix")
+        self.assertEqual(self.unverified(), [])
+
+    def test_reseal_refuses_what_a_correction_does_not_explain(self):
+        self.write("Math/New.md", "# New\n")
+        self.edit_via_hook("index.md", "# Index\n\n" + self.INDEX + "- Prior\n\n## [[New]]\n- New thing\n")
+        out = self.srs("reseal", "Bayes", "New", "Nowhere").stdout
+        self.assertIn("Math/Bayes.md: its list of concepts changed", out)
+        self.assertIn("Math/New.md: new in this session", out)
+        self.assertIn("Nowhere: not an indexed page", out)
+        self.assertIn("Kept the seal of 0", out)
+
+    def test_reseal_refuses_a_page_without_a_seal_before(self):
+        self.srs("unseal", "Bayes")
+        self.edit_via_hook("Math/Bayes.md", self.PAGE + "more\n")
+        self.assertIn("it had no valid seal before the correction", self.srs("reseal", "Bayes").stdout)
+        self.assertIn("Math/Bayes.md", self.unverified())
+
+    def test_reseal_refuses_an_edit_made_before_the_session(self):
+        self.srs("end")
+        self.write("Math/Bayes.md", self.PAGE + "by hand\n")
+        self.srs("begin", "quiz")  # commits the manual edit
+        self.edit_via_hook("Math/Bayes.md", self.PAGE + "by hand, corrected\n")
+        self.assertIn("it had no valid seal before", self.srs("reseal", "Bayes").stdout)
+
+    def test_a_renamed_page_keeps_its_seal_and_its_questions(self):
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy):
+                name = "Bayes rule" if not legacy else "Bayes law"
+                old = "Bayes" if not legacy else "Bayes rule"
+                if legacy:
+                    self.make_legacy()
+                (self.vault / f"Math/{old}.md").rename(self.vault / f"Math/{name}.md")
+                self.index(self.INDEX.replace("[[Bayes]]", f"[[{name}]]"))
+                self.assertEqual(self.unverified(), [f"Math/{name}.md"])
+                out = self.srs("prune-seals").stdout
+                self.assertIn(f"Moved 1 seal of renamed pages: Math/{old}.md -> Math/{name}.md", out)
+                self.assertIn("Removed 0 stale seals", out)
+                self.assertEqual(self.unverified(), [])
+
+    def test_a_renamed_page_that_changed_loses_its_seal(self):
+        (self.vault / "Math/Bayes.md").unlink()
+        self.write("Math/Bayes rule.md", self.PAGE + "more\n")
+        self.index(self.INDEX.replace("[[Bayes]]", "[[Bayes rule]]"))
+        self.assertIn("Removed 1 stale seal: Math/Bayes.md", self.srs("prune-seals").stdout)
+        self.assertEqual(self.unverified(), ["Math/Bayes rule.md"])
+
+
+class OpenQuestionTest(VaultCase):
+    """A question the user postpones waits on its page, without another audit, until the page changes."""
+
+    INDEX = "## [[Eigendecomposition]]\n- Eigenvectors\n\n## [[Bayes]]\n- Bayes' theorem\n"
+
+    def setUp(self):
+        super().setUp()
+        self.index(self.INDEX)
+        self.srs("verify", "Eigendecomposition")
+        self.srs("open", "Bayes", "B: prior isn't in the entry")
+
+    def check(self):
+        return self.srs("check").stdout
+
+    def test_it_is_shown_and_not_audited_again(self):
+        self.assertIn("Math/Bayes.md: B: prior isn't in the entry (postponed 2026-01-10)", self.check())
+        self.assertEqual(srs_report(self.vault)["unverified"], [])
+        self.assertNotIn("### Math/Bayes.md", self.srs("audit-batch").stdout)
+        self.assertIn("Pages with open questions", self.srs("context", "maintenance").stdout)
+
+    def test_questions_add_up_without_repeating(self):
+        self.srs("open", "Math/Bayes.md", "B: prior isn't in the entry", "another", today="2026-01-12")
+        self.assertIn("B: prior isn't in the entry (postponed 2026-01-10) | another (postponed 2026-01-12)", self.check())
+
+    def test_a_change_drops_it_and_the_page_is_audited(self):
+        self.write("Math/Bayes.md", "# Bayes\nnew text\n")
+        self.assertIn("### Math/Bayes.md", self.srs("audit-batch").stdout)
+        self.srs("begin", "maintenance")
+        self.assertIn("Dropped the open questions of 1 page that changed: Math/Bayes.md", self.srs("prune-seals").stdout)
+        self.assertEqual(json.loads((self.vault / ".srs/state.json").read_text())["open"], {})
+
+    def test_an_answer_seals_the_page_and_closes_it(self):
+        self.srs("verify", "Bayes")
+        self.assertIn("Pages with open questions, which the user postponed: none", self.check())
+        self.assertEqual(srs_report(self.vault)["unverified"], [])
+
+    def test_a_sealed_page_with_an_open_question_is_not_promoted(self):
+        self.srs("open", "Eigendecomposition", "E: wrong sign")
+        out = self.srs("context", "promote").stdout
+        self.assertIn("### Math/Eigendecomposition.md (held back)", out)
+        self.assertIn("### Math/Bayes.md (held back)", out)
+        self.srs("open", "Eigendecomposition", "--close")
+        self.assertNotIn("### Math/Eigendecomposition.md (held back)", self.srs("context", "promote").stdout)
+
+    def test_another_correction_keeps_it(self):
+        self.srs("begin", "quiz")
+        self.edit_via_hook("Math/Bayes.md", "# Bayes\nP(A|B) = P(B|A) P(A) / P(B), corrected\n")
+        out = self.srs("reseal", "Bayes").stdout
+        self.assertIn("Kept the open questions of 1: Math/Bayes.md", out)
+        self.assertIn("prior isn't in the entry", self.check())
+
+    def test_bad_calls(self):
+        self.assertEqual(self.srs("open", "Nowhere", "x", check=False).returncode, 2)
+        self.assertNotEqual(self.srs("open", "Bayes", check=False).returncode, 0)
+        self.assertNotEqual(self.srs("open", "Bayes", "x", "--close", check=False).returncode, 0)
+        self.assertIn("has no open question", self.srs("open", "Eigendecomposition", "--close").stdout)
+
+
+class IndexHistoryTest(VaultCase):
+    """The index's git history says when a concept was removed, so nobody proposes it again."""
+
+    def setUp(self):
+        super().setUp()
+        self.commit_index("## [[Eigendecomposition]]\n- Eigenvectors\n- Spectrum — set of eigenvalues\n\n"
+                          "## [[Bayes]]\n- Prior\n", "setup: index 2 pages")
+        self.commit_index("## [[Eigendecomposition]]\n- Eigenvectors\n- Prior\n\n## [[Bayes]]\n- Evidence\n",
+                          "maintenance: drop Spectrum, move Prior")
+
+    def commit_index(self, body, message):
+        self.index(body)
+        self.git("add", "-A")
+        self.git("-c", "user.name=T", "-c", "user.email=t@e.c", "commit", "-q", "-m", message)
+
+    def test_show_says_it_was_removed(self):
+        out = self.srs("show", "spectrum")
+        self.assertIn("Before: removed from the index on ", out.stdout)
+        self.assertIn("from [[Eigendecomposition]] (maintenance: drop Spectrum, move Prior)", out.stdout)
+
+    def test_the_batch_lists_what_was_removed(self):
+        for out in (self.srs("audit-batch").stdout, self.srs("context", "maintenance").stdout,
+                    self.srs("context", "promote").stdout):
+            section = out.split("## Removed from the index before")[1]
+            self.assertIn("Spectrum", section.split("\n")[1])
+            self.assertNotIn("Prior", section.split("\n")[1])
+
+    def test_a_move_between_pages_is_no_removal(self):
+        self.commit_index("## [[Eigendecomposition]]\n- Eigenvectors\n\n## [[Bayes]]\n- Evidence\n- Prior\n", "move back")
+        v = srs.Vault(root=self.vault, config=srs.load_config(self.vault), today=D("2026-01-10"))
+        removals = srs.index_removals(v)
+        self.assertIn("spectrum", removals)
+        self.assertNotIn("prior", removals)
+
+    def test_a_concept_put_back_is_no_removal(self):
+        self.commit_index("## [[Eigendecomposition]]\n- Eigenvectors\n- Spectrum\n", "put back")
+        self.assertNotIn("Before:", self.srs("show", "Spectrum").stdout)
+
+    def test_the_diff_warns_about_a_concept_put_back(self):
+        self.srs("begin", "maintenance")
+        text = (self.vault / "index.md").read_text()
+        self.edit_via_hook("index.md", text.replace("- Evidence", "- Evidence\n- Spectrum\n- Likelihood"))
+        out = self.srs("diff").stdout
+        self.assertIn("Concepts this diff puts back in the index", out)
+        self.assertIn("  - Spectrum: removed from the index on", out)
+        self.assertNotIn("  - Likelihood", out)
+
+
 class EmptyCommitTest(VaultCase):
     def test_commit_with_nothing_to_commit_is_neutral_and_succeeds(self):
         self.srs("begin", "maintenance")
@@ -1970,6 +2383,17 @@ class DurationTest(VaultCase):
         path.write_text(json.dumps(session), encoding="utf-8")
         self.assertIn("closed. Duration: 21 min.", self.srs("end").stdout)
 
+    def test_what_follows_the_score_is_not_counted(self):
+        self.srs("begin", "quiz")
+        self.srs("today")
+        path = self.vault / ".srs/session.json"
+        session = json.loads(path.read_text(encoding="utf-8"))
+        now = dt.datetime.now().replace(microsecond=0)
+        session.update(started=(now - dt.timedelta(minutes=40)).isoformat(),
+                       answered=(now - dt.timedelta(minutes=25)).isoformat())
+        path.write_text(json.dumps(session), encoding="utf-8")
+        self.assertIn("closed. Duration: 15 min.", self.srs("end").stdout)
+
     def test_no_duration_for_other_commands(self):
         self.srs("begin", "integrate")
         self.assertNotIn("Duration", self.srs("end").stdout)
@@ -2253,6 +2677,14 @@ class WelcomeTest(VaultCase):
     def test_sealed_pages_ask_for_nothing(self):
         self.seal_pages(6)
         self.assertIsNone(self.maintenance_line())
+
+    def test_open_questions_are_counted_but_do_not_bring_the_line_up(self):
+        names = self.seal_pages(6)
+        self.srs("open", names[0], "E: wrong", "F: no entry")
+        self.assertIsNone(self.maintenance_line())
+        self.change_pages(names[1:])
+        self.assertEqual(self.maintenance_line(), "  /maintenance 5 pages changed since the last check (10 days ago); "
+                                                  "2 open questions")
 
     def test_few_changes_recently_stay_quiet(self):
         names = self.seal_pages(6)
@@ -2616,7 +3048,7 @@ class StatsTest(VaultCase):
 
 
 class FlagTest(VaultCase):
-    """/quiz and /maintenance flag thin pages and misplaced concepts; /maintenance reports both."""
+    """/quiz and /maintenance flag misplaced concepts; thin flags are from before 0.26.0."""
 
     def setUp(self):
         super().setUp()
@@ -2625,36 +3057,28 @@ class FlagTest(VaultCase):
     def flags(self):
         return json.loads((self.vault / ".srs/state.json").read_text(encoding="utf-8"))["flags"]
 
-    def test_thin_flag_still_works(self):
-        self.srs("flag", "Math/Bayes.md")
-        self.assertEqual(self.flags()["thin"], {"Math/Bayes.md": {"day": "2026-01-10", "notes": []}})
-        self.assertEqual(self.flags()["misplaced"], {})
-        self.assertIn("Pages flagged as thin: 1", self.srs("check").stdout)
-        self.srs("unflag", "Math/Bayes.md")
-        self.assertEqual(self.flags()["thin"], {})
-
-    def test_thin_flags_keep_every_reason(self):
-        self.srs("flag", "Math/Bayes.md", "--note", "never says what a prior is")
-        self.srs("flag", "Math/Bayes.md", "--note", "no example of an update", today="2026-01-12")
-        self.srs("flag", "Math/Bayes.md", "--note", "no example of an update", today="2026-01-13")
-        self.assertEqual(self.flags()["thin"]["Math/Bayes.md"], {"day": "2026-01-10", "notes": [
-            {"day": "2026-01-10", "note": "never says what a prior is"},
-            {"day": "2026-01-12", "note": "no example of an update"}]})
-        self.assertIn("Math/Bayes.md (flagged 2026-01-10): never says what a prior is; no example of an update",
-                      self.srs("check").stdout)
-
-    def test_a_thin_flag_from_before_notes_still_loads(self):
+    def set_thin(self, rel, flag):
         path = self.vault / ".srs/state.json"
         state = json.loads(path.read_text(encoding="utf-8"))
-        state["flags"]["thin"] = {"Math/Bayes.md": "2026-01-01"}
+        state["flags"]["thin"] = {rel: flag}
         path.write_text(json.dumps(state), encoding="utf-8")
-        self.assertIn("Math/Bayes.md (flagged 2026-01-01): no note", self.srs("check").stdout)
-        self.srs("flag", "Math/Bayes.md", "--note", "thin")
-        self.assertEqual(self.flags()["thin"]["Math/Bayes.md"],
-                         {"day": "2026-01-01", "notes": [{"day": "2026-01-10", "note": "thin"}]})
+
+    def test_thin_pages_are_no_longer_flagged(self):
+        self.assertNotEqual(self.srs("flag", "Math/Bayes.md", check=False).returncode, 0)
+        self.assertEqual(self.flags()["thin"], {})
+
+    def test_thin_flags_from_before_are_reported_until_removed(self):
+        for flag, text in (("2026-01-01", "no note"),
+                           ({"day": "2026-01-01", "notes": [{"day": "2026-01-01", "note": "no prior"}]}, "no prior")):
+            self.set_thin("Math/Bayes.md", flag)
+            out = self.srs("check").stdout
+            self.assertIn("Thin flags from before 0.26.0", out)
+            self.assertIn(f"Math/Bayes.md (flagged 2026-01-01): {text}", out)
+            self.srs("unflag", "Math/Bayes.md")
+            self.assertEqual(self.flags()["thin"], {})
 
     def test_flags_of_a_renamed_page_or_a_removed_concept_go_stale(self):
-        self.srs("flag", "Math/Bayes.md", "--note", "thin")
+        self.set_thin("Math/Bayes.md", "2026-01-01")
         self.srs("flag", "Math/Eigendecomposition.md", "--misplaced", "Matrix norm")
         (self.vault / "Math/Bayes.md").rename(self.vault / "Math/Bayes rule.md")
         self.index("## [[Eigendecomposition]]\n- Eigenvectors\n")
@@ -3608,10 +4032,52 @@ class QuizOffDocsTest(unittest.TestCase):
         self.assertIn("A concept the page only uses, without explaining it, doesn't fail B", text)
         self.assertIn("FAIL <path> — C?:", text)
         maintenance = (ROOT / "skills/maintenance/SKILL.md").read_text()
-        self.assertIn("they become flags only on the user's approval", maintenance)
-        self.assertIn('srs.py flag "<page path>" --note "<what it leaves out>"', maintenance)
+        self.assertIn("for an M note, ask whether to flag it", maintenance)
         promote = (ROOT / "skills/promote/SKILL.md").read_text()
-        self.assertIn('flag only the ones the user approves, with `srs.py flag "<path>" --note', promote)
+        for name, text in (("maintenance", maintenance), ("promote", promote)):
+            self.assertIn("for a T note, offer an incomplete callout", text, name)
+            self.assertNotIn("--note", text, name)
+
+    def test_the_auditor_judges_only_the_change_of_a_sealed_page(self):
+        text = (ROOT / "agents/page-auditor.md").read_text()
+        self.assertIn("`Changed since its seal` section", text)
+        self.assertIn("A page without that section is judged in full.", text)
+        self.assertIn("Changed since its seal (", (ROOT / "scripts/srs.py").read_text())
+
+
+class ErrorsDocsTest(unittest.TestCase):
+    """Errors in the pages: one set of rules, and each command says when it asks."""
+
+    def test_the_rules_give_the_ways_out(self):
+        rules = (ROOT / "rules.md").read_text()
+        for text in ("a Haiku model skips it", "What an auditor reports is a lead", "> [!question] Incomplete",
+                     "write it only on an explicit yes", "srs.py reseal", "srs.py update"):
+            self.assertIn(text, rules)
+
+    def test_every_command_that_reads_pages_looks_for_errors(self):
+        for name in ("quiz", "integrate", "maintenance", "promote"):
+            self.assertIn("as the rules say", (ROOT / f"skills/{name}/SKILL.md").read_text(), name)
+
+    def test_the_quiz_keeps_its_pace(self):
+        self.assertIn("Don't stop to look for errors", (ROOT / "skills/quiz/SKILL.md").read_text())
+        self.assertIn("in /quiz, only take note of what you happen to see", (ROOT / "rules.md").read_text())
+
+    def test_the_quiz_leaves_errors_for_the_end(self):
+        skill = (ROOT / "skills/quiz/SKILL.md").read_text()
+        self.assertIn('srs.py defer "<Concept>"', skill)
+        self.assertIn('srs.py amend "<Concept>" void', skill)
+        self.assertLess(skill.index('srs.py commit -m "quiz: <score>"'), skill.index("If you noticed errors"))
+        self.assertLess(skill.index("If you noticed typos"), skill.index('srs.py commit -m "quiz: <score>"'))
+
+    def test_the_diff_judge_accepts_a_correction_of_the_plan(self):
+        text = (ROOT / "agents/diff-judge.md").read_text()
+        self.assertIn("unless an item of the plan corrects it", text)
+
+    def test_maintenance_decides_each_batch_before_the_next(self):
+        text = (ROOT / "skills/maintenance/SKILL.md").read_text()
+        self.assertIn("Each batch is decided before the next is audited.", text)
+        self.assertIn('srs.py open "<page>"', text)
+        self.assertNotIn("srs.py unseal", text)
 
     def test_maintenance_uses_the_scripts_tools_for_its_fixes(self):
         maintenance = (ROOT / "skills/maintenance/SKILL.md").read_text()

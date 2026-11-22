@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import copy
 import csv
+import difflib
 import datetime as dt
 import fnmatch
 import hashlib
@@ -49,6 +50,8 @@ DESC_SEP = " — "  # space, em dash, space
 SOURCE_RANK = {"integrate": 0, "promote": 1}
 EXCLUSION_HINTS = ("template", "attachment", "asset", "excalidraw", "daily", "journal", "archive")
 PHASES = ("new", "learning", "review", "relearning")
+HOLD_SHARE = 0.4  # new content: the second question comes after this share of the interval
+HOLD_MIN_DAYS = 2  # and is left out when that is sooner than this
 RESULTS = ("pass", "fail", "retry")  # retry: wrong at first, then right on a second try without hints
 REVIEW_MODES = ("human", "agent")
 REVIEW_DIR = "review"  # .srs/review/: state of the agent review, never committed
@@ -479,6 +482,9 @@ class IndexPage:
             lines.append(f"- {c.name}" + (f"{DESC_SEP}{c.desc}" if c.desc else ""))
         return "\n".join(lines)
 
+    def concept_lines(self) -> list:
+        return [c.name + (f"{DESC_SEP}{c.desc}" if c.desc else "") for c in self.concepts]
+
     def entry_hash(self) -> str:
         return hashlib.sha1(self.entry_text().encode("utf-8")).hexdigest()[:12]
 
@@ -621,7 +627,8 @@ def load_index(v: Vault):
 
 
 def empty_state() -> dict:
-    return {"version": 1, "next_order": 1, "concepts": {}, "flags": {"thin": {}, "misplaced": {}}, "skipped": {}}
+    return {"version": 1, "next_order": 1, "concepts": {}, "flags": {"thin": {}, "misplaced": {}}, "skipped": {},
+            "open": {}}
 
 
 def load_state(v: Vault) -> dict:
@@ -629,6 +636,7 @@ def load_state(v: Vault) -> dict:
     state.setdefault("concepts", {})
     state.setdefault("next_order", 1)
     state.setdefault("skipped", {})
+    state.setdefault("open", {})
     flags = state.setdefault("flags", {})
     thin = flags.setdefault("thin", {})
     flags.setdefault("misplaced", {})
@@ -701,12 +709,141 @@ def load_verified(v: Vault) -> dict:
     return read_json(v.srs / "verified.json", {})
 
 
-def seal_ok(v: Vault, verified: dict, page: IndexPage) -> bool:
-    record = verified.get(page.path or "")
-    if not record or page.status != "ok":
-        return False
+COMMENT_RE = re.compile(r"%%.*?%%", re.S)
+SHOWN_LINK_RE = re.compile(r"(?<!!)\[\[([^\]\n]*)\]\]")
+WEB_LINK_RE = re.compile(r"(?<!!)\[([^\]\n]*)\]\((?:https?://|obsidian://|[^()\s]*\.md)[^()\s]*\)")
+
+
+def visible_text(text: str) -> str:
+    """What a reader of the page sees: link targets behind a shown text, `%% comments %%` and
+    spacing left out. Code blocks are kept as they are."""
+    out, prose, fence = [], [], FenceTracker()
+
+    def flush():
+        shown = COMMENT_RE.sub("", "\n".join(prose))
+        shown = SHOWN_LINK_RE.sub(lambda m: m.group(1).rsplit("|", 1)[-1], shown)
+        shown = WEB_LINK_RE.sub(r"\1", shown)
+        out.extend(line for line in (" ".join(raw.split()) for raw in shown.split("\n")) if line)
+        prose.clear()
+
+    for raw in text.lstrip("\ufeff").splitlines():
+        if fence.step(raw):
+            flush()
+            out.append(raw.rstrip())
+        else:
+            prose.append(raw)
+    flush()
+    return "\n".join(out)
+
+
+def decoded(data: bytes) -> str:
+    return data.decode("utf-8", errors="replace")
+
+
+def text_hash(data: bytes) -> str:
+    return hashlib.sha1(visible_text(decoded(data)).encode("utf-8")).hexdigest()[:12]
+
+
+def seal_record(v: Vault, page: IndexPage) -> dict:
     data = (v.root / page.path).read_bytes()
-    return record.get("blob") == blob_hash(data) and record.get("entry") == page.entry_hash()
+    return {"blob": blob_hash(data), "text": text_hash(data), "entry": page.entry_hash(),
+            "concepts": page.concept_lines(), "day": v.today.isoformat()}
+
+
+def stored_bytes(v: Vault, *args):
+    """What git prints for these arguments, or None when it fails."""
+    try:
+        return git_bytes(list(args), v.root)
+    except SrsError:
+        return None
+
+
+def sealed_bytes(v: Vault, record: dict):
+    """The page as it was sealed, from git; None when git doesn't have it."""
+    return stored_bytes(v, "cat-file", "blob", str(record.get("blob")))
+
+
+def same_text(v: Vault, record: dict, data: bytes, use_git: bool = True) -> bool:
+    """Whether the page still shows the text that was sealed."""
+    if record.get("blob") == blob_hash(data):
+        return True
+    if record.get("text"):
+        return record["text"] == text_hash(data)
+    old = sealed_bytes(v, record) if use_git else None  # sealed before 0.26.0, without the text's hash
+    return old is not None and text_hash(old) == text_hash(data)
+
+
+def same_entry(record: dict, page: IndexPage, old_path=None) -> bool:
+    """Whether the page's entry lists the concepts it was sealed with. The link may change: a
+    renamed page is the same page."""
+    if "concepts" in record:
+        return record["concepts"] == page.concept_lines()
+    if record.get("entry") == page.entry_hash():
+        return True
+    links = [old_path[:-3], Path(old_path).stem] if old_path else []
+    return any(record.get("entry") == IndexPage(link=x, line=0, header=f"## [[{x}]]",
+                                                concepts=page.concepts).entry_hash() for x in links)
+
+
+def seal_ok(v: Vault, verified: dict, page: IndexPage, use_git: bool = True) -> bool:
+    record = verified.get(page.path or "")
+    if not record or page.status != "ok" or not same_entry(record, page):
+        return False
+    return same_text(v, record, (v.root / page.path).read_bytes(), use_git)
+
+
+def open_questions(v: Vault, state: dict, idx: Index) -> dict:
+    """{path: record} of the pages with questions the user postponed. They last until the page
+    or its entry changes."""
+    found = {}
+    for page in idx.pages:
+        record = state["open"].get(page.path or "")
+        if record and page.status == "ok" and record.get("concepts") == page.concept_lines() \
+                and record.get("text") == text_hash((v.root / page.path).read_bytes()):
+            found[page.path] = record
+    return found
+
+
+FULL_AUDIT_SHARE = 0.5  # from this share of changed words on, a sealed page is audited in full
+
+
+def changed_share(old: str, new: str) -> float:
+    a, b = old.split(), new.split()
+    same = sum(m.size for m in difflib.SequenceMatcher(None, a, b, autojunk=False).get_matching_blocks())
+    return 1 - same / max(1, len(a), len(b))
+
+
+def changes_since_seal(v: Vault, record, page: IndexPage):
+    """The lines that changed since the page was sealed, for an audit of the change alone. None
+    when the page has to be audited in full: never sealed, mostly rewritten, or the sealed
+    version is not known."""
+    old = sealed_bytes(v, record) if record else None
+    if old is None or ("concepts" not in record and not same_entry(record, page)):
+        return None
+    before = visible_text(decoded(old))
+    after = visible_text(read_text(v.root / page.path))
+    if changed_share(before, after) >= FULL_AUDIT_SHARE:
+        return None
+
+    def delta(a, b):
+        return [line for line in difflib.unified_diff(a, b, n=0, lineterm="")][2:]
+
+    lines = [line for line in delta(before.splitlines(), after.splitlines()) if not line.startswith("@@")]
+    entry = [line for line in delta(record["concepts"], page.concept_lines())
+             if not line.startswith("@@")] if "concepts" in record else []
+    return (["Page:"] + lines if lines else []) + (["Entry:"] + entry if entry else [])
+
+
+def audit_page_lines(v: Vault, verified: dict, page: IndexPage) -> list:
+    """One page of a batch for the auditor."""
+    out = [f"### {page.path}", f"Absolute path: `{(v.root / page.path).as_posix()}`"]
+    out += [f"    {line}" for line in page.entry_text().splitlines()]
+    record = verified.get(page.path)
+    changes = changes_since_seal(v, record, page)
+    if changes:
+        out.append(f"Changed since its seal ({record.get('day')}); judge only what these changes affect:")
+        out += [f"    {line}" for line in changes]
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -814,9 +951,8 @@ def schedule_thirds(rec: dict, passed: bool, today: dt.date, p: dict, name: str)
     elif phase == "review":
         interval = max(low, int(rec.get("interval") or low))
         if passed:
-            last = parse_day(rec.get("last")) or today
-            elapsed = (today - last).days
-            base = interval if elapsed <= interval else (interval + elapsed) / 2
+            due = parse_day(rec.get("due")) or today
+            base = interval + max(0, (today - due).days) / 2
             new = max(interval + 1, round_half_up(base * mult))
             new = max(interval + 1, fuzzed(new, name, today, p))
             rec.update(interval=new, due=(today + days(new)).isoformat())
@@ -913,33 +1049,52 @@ def apply_answer(rec: dict, result, today: dt.date, sched: dict, name: str) -> d
         raise SrsError(f"Unknown result '{result}'. Use one of: {', '.join(RESULTS)}.")
     passed = result == "pass"
     _, params, entry = algorithm(sched)
-    held = rec.pop("hold", False)
-    if result == "retry":
-        apply_retry(rec, today, sched)
-    elif held and passed and rec["phase"] == "review":
-        # The new content was remembered: keep the interval, without growth.
+    held = int(rec.pop("hold", 0))
+    rec.pop("deferred", None)
+    focus = None
+    if held and result != "fail" and rec["phase"] == "review":
+        # The new content was remembered, at once or on a retry: keep the interval, without growth.
         interval = max(1, int(rec.get("interval") or 1))
-        rec["due"] = (today + days(interval)).isoformat()
+        share = hold_days(interval)
+        wait = interval
+        if held == 1 and share:  # ask about it once more on the way to the interval
+            wait, focus = share, rec.get("focus")
+            rec["hold"] = 2
+        elif held == 2:  # what is left of the interval
+            wait = interval - share
+        rec["due"] = (today + days(max(1, wait))).isoformat()
+    elif result == "retry":
+        apply_retry(rec, today, sched)
     else:  # a fail on hold is a normal lapse
         entry.schedule(rec, passed, today, params, name)
     rec["reps"] = int(rec.get("reps") or 0) + 1
     rec["introduced"] = rec.get("introduced") or today.isoformat()
     rec["last"] = today.isoformat()
-    rec["focus"] = None
+    rec["focus"] = focus
     return rec
+
+
+def hold_days(interval: int) -> int:
+    """New content: the days from the first question to the second, or 0 when the interval
+    is too short for a second one."""
+    share = round_half_up(interval * HOLD_SHARE)
+    return share if share >= HOLD_MIN_DAYS else 0
 
 
 def apply_update(rec: dict, today: dt.date, focus: str) -> dict:
     """New content for a scheduled concept: the next question targets it. A concept in
-    review comes back tomorrow on hold: a pass keeps its interval, a fail is a normal lapse."""
+    review comes back tomorrow on hold, then after a share of its interval, then when the
+    interval is over. The first two passes keep the interval; a fail is a normal lapse."""
     rec = dict(rec)
     if rec["phase"] == "review":
-        rec.update(hold=True, due=(today + days(1)).isoformat())
+        rec.update(hold=1, due=(today + days(1)).isoformat())
     rec["focus"] = focus
     return rec
 
 
 def is_due(rec: dict, today: dt.date) -> bool:
+    if rec.get("deferred") == today.isoformat():
+        return False
     if rec["phase"] == "new":
         queued = parse_day(rec.get("queued"))
         return queued is not None and queued < today
@@ -1473,9 +1628,10 @@ def session_minutes(session: dict):
     """Whole minutes since the session opened, or None when the start time can't be read."""
     try:
         started = dt.datetime.fromisoformat(session["started"])
+        ended = dt.datetime.fromisoformat(session["answered"]) if session.get("answered") else dt.datetime.now()
     except (KeyError, TypeError, ValueError):
         return None
-    return max(0, round((dt.datetime.now() - started).total_seconds() / 60))
+    return max(0, round((ended - started).total_seconds() / 60))
 
 
 # ---------------------------------------------------------------------------
@@ -1576,6 +1732,7 @@ def run_checks(v: Vault) -> dict:
         "skipped": skipped,
         "lost_entries": lost_entries(v, idx, verified, left),
         "unverified": [],
+        "open": sorted(open_questions(v, state, idx).items()),
         "stale_seals": stale_seals(v, verified),
         "stale_flags": stale_flags(v, state, idx),
         "thin": sorted(state["flags"]["thin"].items()),
@@ -1594,7 +1751,9 @@ def run_checks(v: Vault) -> dict:
             if chars > limits["page_max_chars"]:
                 report["over_size"].append((page.path, chars))
             # a page that shares a concept name stays unsealed until the duplicate is fixed
-            if not seal_ok(v, verified, page) or page.path in dup_pages:
+            # and one with open questions waits for the user, not for another audit
+            waiting = any(rel == page.path for rel, _ in report["open"])
+            if page.path in dup_pages or not (waiting or seal_ok(v, verified, page)):
                 report["unverified"].append(page)
     owners = idx.by_key()
     for name, rec in sorted(state["concepts"].items()):
@@ -1629,6 +1788,10 @@ def format_checks(v: Vault, report: dict, only=None) -> list:
         notes = [n["note"] for n in flag.get("notes", []) if n.get("note")]
         return f"{rel} (flagged {flag.get('day')})" + (f": {'; '.join(notes)}" if notes else ": no note")
 
+    def open_line(x):
+        rel, record = x
+        return f"{rel}: " + " | ".join(f"{q['text']} (postponed {q['day']})" for q in record.get("questions", []))
+
     sections = [
         ("over_size", f"Pages over {limits['page_max_chars']} characters", lambda x: f"{x[0]} ({x[1]} characters)"),
         ("duplicates", "Concept names used on more than one page", lambda x: f"{x[0]}: {', '.join(x[1])}"),
@@ -1638,11 +1801,12 @@ def format_checks(v: Vault, report: dict, only=None) -> list:
         ("index_problems", "Index lines not understood", lambda x: f"line {x[0]}: {x[1]}"),
         ("orphans", "Concepts in review but not in the index (orphans)", lambda x: x),
         ("unindexed", "Pages not in the index", lambda x: x),
+        ("open", "Pages with open questions, which the user postponed", open_line),
         ("unverified", "Indexed pages without a valid seal", lambda p: p.path),
         ("stale_seals", "Stale seals (the file is gone or is no longer a page; /maintenance removes them)", lambda x: x),
         ("stale_flags", "Stale flags (the page is gone, or the concept left the index; /maintenance removes them)",
          lambda x: f"{x[0]}: {x[1]}"),
-        ("thin", "Pages flagged as thin", thin_line),
+        ("thin", "Thin flags from before 0.26.0 (offer an incomplete callout for each, then unflag it)", thin_line),
         ("misplaced", "Concepts flagged as misplaced", misplaced_line),
         ("leeches", f"Leeches ({v.leech_at}+ lapses)", lambda x: f"{x[0]} ({x[1]} lapses)"),
         ("stuck_gaps", f"Gaps that won't close ({GAP_STUCK_FAILS}+ fails)", lambda x: f"{x[0]}: {x[1]} ({x[2]} fails)"),
@@ -1780,6 +1944,54 @@ def cmd_begin(args):
         print(line)
 
 
+def index_removals(v: Vault) -> dict:
+    """{concept key: (name, day, subject, page link)} of the concepts whose last change in the index
+    was their removal. A line moved between pages in one commit is no removal."""
+    log = git(["log", "--format=%x00%H%x1f%ad%x1f%s", "--date=short", "-p", "-U0", "--no-color", "--", v.index_rel],
+              v.root, check=False)
+    if log.returncode != 0:
+        return {}
+    seen, found = set(), {}
+    for chunk in log.stdout.split("\0")[1:]:
+        head, _, patch = chunk.partition("\n")
+        sha, day, subject = (head.split("\x1f") + ["", ""])[:3]
+        added, removed = {}, {}
+        for line in patch.splitlines():
+            m = ITEM_RE.match(line[1:]) if line[:1] in "+-" and line[:3] not in ("+++", "---") else None
+            if m:
+                name = m.group(1).split(DESC_SEP, 1)[0].strip()
+                (added if line[0] == "+" else removed)[norm_key(name)] = name
+        for key, name in removed.items():
+            if key not in seen and key not in added:
+                found[key] = (name, day, subject, sha)
+        seen.update(added, removed)
+    return found
+
+
+def removed_from(v: Vault, removal: tuple) -> str:
+    name, day, subject, sha = removal
+    old = git(["show", f"{sha}~1:./{v.index_rel}"], v.root, check=False)
+    entries = parse_index(old.stdout).by_key().get(norm_key(name), []) if old.returncode == 0 else []
+    where = f" from [[{entries[0].page.link}]]" if entries else ""
+    return f"removed from the index on {day}{where} ({subject})"
+
+
+def removal_lines(v: Vault, idx: Index) -> list:
+    """For the model of the session, not for the auditor: what not to propose again."""
+    owners = idx.by_key()
+    names = [x[0] for key, x in sorted(index_removals(v).items()) if key not in owners]
+    if not names:
+        return []
+    return ["", "## Removed from the index before (not for the auditor): the user decided, so don't propose these again",
+            "; ".join(names)]
+
+
+def removed_before(v: Vault, names: list) -> list:
+    """One line for each of these concepts that the index had and lost."""
+    removals = index_removals(v) if names else {}
+    return [f"{name}: {removed_from(v, removals[norm_key(name)])}" for name in names if norm_key(name) in removals]
+
+
 HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.M)
 
 
@@ -1817,6 +2029,10 @@ def render_diff(v: Vault, repo: Repo, changed: dict, paths: list, warnings: bool
         found = index_warnings(v, changed[v.index_rel] == "??")
         if found:
             chunks += found + [""]
+        before = removed_before(v, new_index_concepts(v))
+        if before:
+            chunks += ["Concepts this diff puts back in the index; tell the user, who may have removed them on purpose:"]
+            chunks += [f"  - {line}" for line in before] + [""]
     if tracked:
         chunks.append(git(["diff", "HEAD", "--stat", "--"] + tracked, v.root).stdout.rstrip())
     for p in untracked:
@@ -2043,18 +2259,55 @@ def cmd_record(args):
     updated["undo"] = {"day": v.today.isoformat(), "before": snapshot}
     state["concepts"][name] = updated
     save_state(v, state)
-    append_log(v, [v.today.isoformat(), name, args.result, before, interval])
+    # A question on new content is not a review of the whole interval: the log keeps it apart.
+    phase = "update" if rec.get("hold") and before == "review" else before
+    append_log(v, [v.today.isoformat(), name, args.result, phase, interval])
     print(describe_answer(name, before, updated, v.today, v.leech_at) + note)
+    print(question_count(v, state, neighbors))
+
+
+def question_count(v: Vault, state: dict, neighbors) -> str:
     left, info = daily_list(state, v.sched, v.today, neighbors)
     total = info["done"] + len(left)
     if left:
-        print(f"Next question: {info['done'] + 1}/{total}.")
-    else:
-        print(f"That was the last question ({total}/{total}).")
+        return f"Next question: {info['done'] + 1}/{total}."
+    return f"That was the last question ({total}/{total})."
 
 
-def rewrite_log_result(v: Vault, day: str, name: str, result: str):
-    """Change the result of the last log line of `name` on `day`, leaving every other byte as it was.
+def cmd_defer(args):
+    """Put a concept off to the next study day without an answer, e.g. when its page has an error."""
+    v = open_vault(args)
+    state = load_state(v)
+    name = find_state_name(state, args.concept)
+    if name is None:
+        raise SrsError(f"'{args.concept}' is not in the review schedule.", 2)
+    rec = state["concepts"][name]
+    if rec.get("last") == v.today.isoformat():
+        raise SrsError(f"{name} was already answered today: undo it with srs.py amend \"{name}\" void.", 2)
+    before = daily_list(state, v.sched, v.today, vault_neighbors(v))[0]
+    if name not in before:
+        raise SrsError(f"{name} is not in today's list.", 2)
+    rec["deferred"] = v.today.isoformat()
+    save_state(v, state)
+    print(f"{name}: not asked today, back tomorrow.")
+    print_replacement(v, state, before)
+
+
+def print_replacement(v: Vault, state: dict, before: list) -> None:
+    """After a concept leaves today's list: the one that takes its place, if any, and the count."""
+    idx, _ = load_index(v)
+    neighbors = index_neighbors(idx)
+    entered = [n for n in daily_list(state, v.sched, v.today, neighbors)[0] if n not in before]
+    if entered:
+        print("Takes its place in today's list; ask it after the others:")
+        for name in entered:
+            print("\n".join(due_item_lines(state, idx, f"- {name}", name)))
+    print(question_count(v, state, neighbors))
+
+
+def rewrite_log_result(v: Vault, day: str, name: str, result):
+    """Change the result of the last log line of `name` on `day`, or drop the line when the result
+    is None, leaving every other byte as it was.
     Returns the result that line had, or None when there is no such line."""
     path = v.srs / "log.csv"
     if not path.exists():
@@ -2066,10 +2319,13 @@ def rewrite_log_result(v: Vault, day: str, name: str, result: str):
         row = next(csv.reader([body]), [])
         if len(row) >= 3 and row[0] == day and row[1] == name:
             previous = row[2]
-            row[2] = result
-            out = io.StringIO()
-            csv.writer(out, lineterminator="").writerow(row)
-            lines[i] = out.getvalue() + lines[i][len(body):]
+            if result is None:
+                del lines[i]
+            else:
+                row[2] = result
+                out = io.StringIO()
+                csv.writer(out, lineterminator="").writerow(row)
+                lines[i] = out.getvalue() + lines[i][len(body):]
             with path.open("w", encoding="utf-8", newline="") as fh:
                 fh.write("\n".join(lines))
             touch(v, f"{SRS_DIR}/log.csv")
@@ -2101,7 +2357,8 @@ def rename_in_log(v: Vault, old: str, new: str) -> None:
 
 
 def cmd_amend(args):
-    """Correct today's answer for a concept, e.g. after the user contests a verdict."""
+    """Correct today's answer for a concept, e.g. after the user contests a verdict, or undo it
+    (void) when its page turns out to be wrong: the concept is then put off to the next day."""
     v = open_vault(args)
     state = load_state(v)
     name = find_state_name(state, args.concept)
@@ -2126,6 +2383,18 @@ def cmd_amend(args):
     if registered == args.result:
         raise SrsError(f"{name} is already recorded as {args.result} today. "
                        "Amend it with the other result if the verdict was wrong.", 2)
+    if args.result == "void":
+        if args.gap:
+            raise SrsError("--gap doesn't go with void: there is no answer left to open a gap.", 2)
+        before = daily_list(state, v.sched, v.today, vault_neighbors(v))[0]
+        restored = copy.deepcopy(undo["before"])
+        restored["deferred"] = today
+        state["concepts"][name] = restored
+        save_state(v, state)
+        rewrite_log_result(v, today, name, None)
+        print(f"{name}: today's answer undone, back tomorrow.")
+        print_replacement(v, state, before)
+        return
     require_retry(v, args.result)
     restored = copy.deepcopy(undo["before"])
     before = restored.get("phase")
@@ -2141,6 +2410,10 @@ def cmd_amend(args):
 
 def cmd_today(args):
     v = open_vault(args)
+    session = load_session(v)
+    if session is not None and session.get("command") == "quiz":
+        session["answered"] = now_iso()  # what follows, such as corrections, is not part of the quiz's duration
+        save_session(v, session)
     t = v.today.isoformat()
     rows = [r for r in read_log(v) if r["day"] == t]
     passed = [r["concept"] for r in rows if r["result"] == "pass"]
@@ -2278,7 +2551,7 @@ def cmd_merge(args):
     save_state(v, state)
 
 
-def show_lines(v: Vault, idx: Index, state: dict, raw: str) -> list:
+def show_lines(v: Vault, idx: Index, state: dict, raw: str, removals: dict) -> list:
     entries = idx.by_key().get(norm_key(raw), [])
     name = find_state_name(state, raw) or (entries[0].name if entries else raw)
     out = [name]
@@ -2287,6 +2560,8 @@ def show_lines(v: Vault, idx: Index, state: dict, raw: str) -> list:
         out.append(f"  Index: {where}" + (f" — {e.desc}" if e.desc else ""))
     if not entries:
         out.append("  Index: not in the index")
+        if norm_key(raw) in removals:
+            out.append("  Before: " + removed_from(v, removals[norm_key(raw)]))
     rec = state["concepts"].get(find_state_name(state, raw) or "")
     if rec is None:
         out.append("  Quiz: not scheduled (index only)")
@@ -2309,9 +2584,12 @@ def cmd_show(args):
     idx, _ = load_index(v)
     state = load_state(v)
     unknown = []
+    missing = any(norm_key(raw) not in idx.by_key() for raw in args.concepts)
+    removals = index_removals(v) if missing else {}
     for i, raw in enumerate(args.concepts):
-        lines = show_lines(v, idx, state, raw)
-        if not idx.by_key().get(norm_key(raw)) and find_state_name(state, raw) is None:
+        lines = show_lines(v, idx, state, raw, removals)
+        if not idx.by_key().get(norm_key(raw)) and find_state_name(state, raw) is None \
+                and norm_key(raw) not in removals:
             unknown.append(raw)
         if i:
             print()
@@ -2326,25 +2604,14 @@ def cmd_flag(args):
     rel = norm_rel(args.page)
     if not (v.root / rel).exists():
         raise SrsError(f"No such page: {rel}", 2)
-    if args.to and not args.misplaced:
-        raise SrsError('--to goes with --misplaced: srs.py flag "<page>" --misplaced "<Concept>" --to "<where it belongs>".')
-    if args.misplaced:
-        idx, _ = load_index(v)
-        owners = idx.by_key().get(norm_key(args.misplaced))
-        if not owners:
-            raise SrsError(f"'{args.misplaced}' is not in the index.", 2)
-        name = owners[0].name
-        state["flags"]["misplaced"][name] = {"page": rel, "to": short(args.to or "", 120), "day": v.today.isoformat()}
-        save_state(v, state)
-        print(f"Flagged {name} as misplaced on {rel}; /maintenance will report it.")
-        return
-    # A second flag on the same page keeps the first day and adds its note, so no reason is lost.
-    flag = state["flags"]["thin"].setdefault(rel, {"day": v.today.isoformat(), "notes": []})
-    note = short(args.note or "", 160)
-    if note and note not in [n.get("note") for n in flag["notes"]]:
-        flag["notes"].append({"day": v.today.isoformat(), "note": note})
+    idx, _ = load_index(v)
+    owners = idx.by_key().get(norm_key(args.misplaced))
+    if not owners:
+        raise SrsError(f"'{args.misplaced}' is not in the index.", 2)
+    name = owners[0].name
+    state["flags"]["misplaced"][name] = {"page": rel, "to": short(args.to or "", 120), "day": v.today.isoformat()}
     save_state(v, state)
-    print(f"Flagged {rel} as thin; /maintenance will report it.")
+    print(f"Flagged {name} as misplaced on {rel}; /maintenance will report it.")
 
 
 def cmd_unflag(args):
@@ -2630,10 +2897,12 @@ def find_index_page(idx: Index, target: str):
 
 
 def cmd_verify(args):
+    """Seal pages with nothing pending: the auditor passed them, or the user decided what it found."""
     v = open_vault(args)
     idx, _ = load_index(v)
     owners = idx.by_key()
     verified = load_verified(v)
+    state = load_state(v)
     sealed, refused = [], []
     for target in args.pages:
         page = find_index_page(idx, target)
@@ -2652,15 +2921,103 @@ def cmd_verify(args):
         if shared:
             refused.append(f"{page.path}: concept names also used elsewhere: {', '.join(shared)}")
             continue
-        verified[page.path] = {"blob": blob_hash(data), "entry": page.entry_hash(), "day": v.today.isoformat()}
+        verified[page.path] = seal_record(v, page)
         sealed.append(page.path)
     if sealed:
         write_json(v.srs / "verified.json", verified)
         touch(v, f"{SRS_DIR}/verified.json")
+    answered = [rel for rel in sealed if state["open"].pop(rel, None) is not None]
+    if answered:
+        save_state(v, state)
     print(f"Sealed {len(sealed)}: {', '.join(sealed) or '-'}")
     if refused:
         print("Refused:\n" + "\n".join(f"  - {r}" for r in refused))
         raise SystemExit(2)
+
+
+def cmd_reseal(args):
+    """Keep the seal, or the open questions, of pages the session only corrected. Run before the
+    commit: HEAD still has each page as it was before the correction."""
+    v = open_vault(args)
+    require_repo(v)
+    require_session(v)
+    idx, _ = load_index(v)
+    head = git(["show", f"HEAD:./{v.index_rel}"], v.root, check=False)
+    old_idx = parse_index(head.stdout if head.returncode == 0 else "")
+    resolve_links(v, old_idx)
+    verified, state = load_verified(v), load_state(v)
+    sealed, kept, refused = [], [], []
+    for target in args.pages:
+        page = find_index_page(idx, target)
+        if page is None or page.status != "ok":
+            refused.append(f"{target}: not an indexed page")
+            continue
+        old = old_idx.page_by_path(page.path)
+        data = stored_bytes(v, "show", f"HEAD:./{page.path}")
+        if old is None or data is None:
+            refused.append(f"{page.path}: new in this session")
+            continue
+        if sorted(norm_key(c.name) for c in old.concepts) != sorted(norm_key(c.name) for c in page.concepts):
+            refused.append(f"{page.path}: its list of concepts changed, so it needs an audit")
+            continue
+        waiting = state["open"].get(page.path)
+        if waiting and waiting.get("text") == text_hash(data) and waiting.get("concepts") == old.concept_lines():
+            waiting.update(text=text_hash((v.root / page.path).read_bytes()), concepts=page.concept_lines())
+            kept.append(page.path)
+            continue
+        record = verified.get(page.path)
+        if not record or not same_entry(record, old) or not same_text(v, record, data):
+            refused.append(f"{page.path}: it had no valid seal before the correction")
+            continue
+        chars = len(read_text(v.root / page.path))
+        if chars > v.limits["page_max_chars"]:
+            refused.append(f"{page.path}: {chars} characters, over the limit")
+            continue
+        verified[page.path] = seal_record(v, page)
+        sealed.append(page.path)
+    if sealed:
+        write_json(v.srs / "verified.json", verified)
+        touch(v, f"{SRS_DIR}/verified.json")
+    if kept:
+        save_state(v, state)
+    print(f"Kept the seal of {len(sealed)}: {', '.join(sealed) or '-'}")
+    if kept:
+        print(f"Kept the open questions of {len(kept)}: {', '.join(kept)}")
+    if refused:
+        print("Not sealed (fine: /maintenance audits them):\n" + "\n".join(f"  - {r}" for r in refused))
+
+
+def cmd_open(args):
+    """Keep a question the user postponed: the page has no valid seal and isn't audited again
+    until it changes or the question is answered (srs.py verify)."""
+    v = open_vault(args)
+    idx, _ = load_index(v)
+    state = load_state(v)
+    page = find_index_page(idx, args.page)
+    if page is None or page.status != "ok":
+        raise SrsError(f"{args.page}: not an indexed page.", 2)
+    if args.close == bool(args.questions):
+        raise SrsError('Give the questions, or --close: srs.py open "<page>" "<question>" or '
+                       'srs.py open "<page>" --close.')
+    if args.close:
+        if state["open"].pop(page.path, None) is None:
+            print(f"{page.path} has no open question.")
+            return
+        save_state(v, state)
+        print(f"Closed the open questions of {page.path}.")
+        return
+    record = open_questions(v, state, idx).get(page.path) or {"questions": []}
+    known = [q["text"] for q in record["questions"]]
+    for raw in args.questions:
+        text = short(raw, 300)
+        if text not in known:
+            record["questions"].append({"text": text, "day": v.today.isoformat()})
+            known.append(text)
+    record.update(text=text_hash((v.root / page.path).read_bytes()), concepts=page.concept_lines())
+    state["open"][page.path] = record
+    save_state(v, state)
+    print(f"{page.path}: {plural(len(record['questions']), 'open question')}; /maintenance shows "
+          f"{'it' if len(record['questions']) == 1 else 'them'} until the page changes.")
 
 
 def cmd_unseal(args):
@@ -2679,25 +3036,54 @@ def cmd_unseal(args):
     print(f"Unsealed {len(removed)}: {', '.join(removed) or '-'}")
 
 
+def renamed_page(v: Vault, idx: Index, verified: dict, rel: str, record: dict):
+    """The page a seal's file was renamed or moved to: the only indexed page without a seal that
+    shows the same text and lists the same concepts. None when there is no such page, or several."""
+    if (v.root / rel).exists():  # excluded, not renamed
+        return None
+    found = [page for page in idx.pages
+             if page.status == "ok" and page.path not in verified and same_entry(record, page, rel)
+             and same_text(v, record, (v.root / page.path).read_bytes())]
+    return found[0] if len(found) == 1 else None
+
+
 def cmd_prune_seals(args):
     v = open_vault(args)
-    verified = load_verified(v)
-    stale = stale_seals(v, verified)
-    for rel in stale:
-        del verified[rel]
-    if stale:
-        write_json(v.srs / "verified.json", verified)
-        touch(v, f"{SRS_DIR}/verified.json")
-    print(f"Removed {plural(len(stale), 'stale seal')}: {', '.join(stale) or '-'}")
-    # Flags go stale the same way: a renamed page leaves its thin flag on the old path.
     idx, _ = load_index(v)
     state = load_state(v)
+    verified = load_verified(v)
+    stale, moved = [], []
+    gone = stale_seals(v, verified)
+    targets = {rel: renamed_page(v, idx, verified, rel, verified[rel]) for rel in gone}
+    for rel in gone:
+        record, page = verified.pop(rel), targets[rel]
+        if page is None or page.path in verified:
+            stale.append(rel)
+            continue
+        verified[page.path] = dict(record, entry=page.entry_hash(), concepts=page.concept_lines())
+        if rel in state["open"]:
+            state["open"][page.path] = state["open"].pop(rel)
+        moved.append(f"{rel} -> {page.path}")
+    if gone:
+        write_json(v.srs / "verified.json", verified)
+        touch(v, f"{SRS_DIR}/verified.json")
+    if moved:
+        print(f"Moved {plural(len(moved), 'seal')} of renamed pages: {', '.join(moved)}")
+    print(f"Removed {plural(len(stale), 'stale seal')}: {', '.join(stale) or '-'}")
+    # Flags go stale the same way: a renamed page leaves its thin flag on the old path.
     flags = stale_flags(v, state, idx)
     for kind, key in flags:
         del state["flags"][kind][key]
-    if flags:
+    live = open_questions(v, state, idx)
+    closed = sorted(rel for rel in state["open"] if rel not in live)
+    for rel in closed:
+        del state["open"][rel]
+    if flags or closed or moved:
         save_state(v, state)
+    if flags:
         print(f"Removed {plural(len(flags), 'stale flag')}: {', '.join(f'{k}: {key}' for k, key in flags)}")
+    if closed:
+        print(f"Dropped the open questions of {plural(len(closed), 'page')} that changed: {', '.join(closed)}")
 
 
 def without_lines(text: str, lines: list, drop: set) -> str:
@@ -2841,6 +3227,7 @@ WELCOME_STRINGS = {
         "ago_today": "hoje",
         "ago": ("há {n} dia", "há {n} dias"),
         "page": ("página", "páginas"),
+        "open": ("pergunta em aberto", "perguntas em aberto"),
         "stuck": ("lacuna que não fecha", "lacunas que não fecham"),
         "leech": ("leech", "leeches"),
         "supervision": "{n} aguardando supervisão",
@@ -2870,6 +3257,7 @@ WELCOME_STRINGS = {
         "ago_today": "today",
         "ago": ("{n} day ago", "{n} days ago"),
         "page": ("page", "pages"),
+        "open": ("open question", "open questions"),
         "stuck": ("gap that won't close", "gaps that won't close"),
         "leech": ("leech", "leeches"),
         "supervision": "{n} waiting for supervision",
@@ -2925,7 +3313,9 @@ def welcome_maintenance(v: Vault, state: dict, words: dict):
     The last check is the newest seal: the git log can't tell, since other commits use the prefix."""
     idx, _ = load_index(v)
     verified = load_verified(v)
-    pending = sum(1 for page in idx.pages if page.status == "ok" and not seal_ok(v, verified, page))
+    waiting_for_user = open_questions(v, state, idx)
+    pending = sum(1 for page in idx.pages if page.status == "ok" and page.path not in waiting_for_user
+                  and not seal_ok(v, verified, page, use_git=False))
     unindexed = len(unindexed_pages(v, idx, state)[0])
     sealed = [day for day in (parse_day(r.get("day")) for r in verified.values()) if day]
     age = max(0, (v.today - max(sealed)).days) if sealed else None
@@ -2946,6 +3336,9 @@ def welcome_maintenance(v: Vault, state: dict, words: dict):
             parts.append(words["changed"][0 if pending == 1 else 1].format(pages=pages, ago=ago))
     if unindexed:
         parts.append(words["unindexed"].format(pages=welcome_count(words, unindexed, "page")))
+    if waiting_for_user:
+        questions = sum(len(r.get("questions", [])) for r in waiting_for_user.values())
+        parts.append(welcome_count(words, questions, "open"))
     if stuck:
         parts.append(welcome_count(words, stuck, "stuck"))
     if leeches:
@@ -3678,7 +4071,6 @@ def annotated_index(text: str, idx: Index, state: dict) -> list:
 def render_due(v: Vault, state: dict, idx: Index) -> list:
     neighbors = index_neighbors(idx)
     items, info = daily_list(state, v.sched, v.today, neighbors)
-    owners = idx.by_key()
     out = [
         f"Done today: {info['done']} of {v.sched['daily_limit']}. To ask now: {len(items)} "
         f"({info['learning']} learning, relearning or updated, {info['reviews']} reviews, {info['new']} new). "
@@ -3698,24 +4090,30 @@ def render_due(v: Vault, state: dict, idx: Index) -> list:
     total = info["done"] + len(items)  # stays the same all day: each answer moves one from items to done
     out.append(f"Question count: start at {info['done'] + 1}/{total}, end at {total}/{total}.")
     out.append("")
+    owners = idx.by_key()
     for n, name in enumerate(items, start=1):
-        rec = state["concepts"][name]
-        entries = owners.get(norm_key(name), [])
-        page = entries[0].page if entries else None
-        if page is None:
-            where = "not in the index (orphan): skip it and tell the user to run /maintenance"
-        elif page.status != "ok":
-            where = f"[[{page.link}]] does not resolve ({page.status}): skip it and suggest /maintenance"
-        else:
-            where = page.path
-        out.append(f"{n}. {name} — {describe_record(rec)}")
-        out.append(f"   Page: {where}")
-        if rec.get("focus"):
-            out.append(f"   Focus (new content): {rec['focus']}")
-        elif rec.get("gap"):
-            out.append(f"   Gap (ask about this idea, not a new angle): {rec['gap']['idea']}")
-        if rec.get("questions"):
-            out.append("   Recent questions: " + " | ".join(rec["questions"]))
+        out += due_item_lines(state, idx, f"{n}. {name}", name, owners)
+    return out
+
+
+def due_item_lines(state: dict, idx: Index, label: str, name: str, owners=None) -> list:
+    """What the quiz needs to ask one concept."""
+    rec = state["concepts"][name]
+    entries = (owners or idx.by_key()).get(norm_key(name), [])
+    page = entries[0].page if entries else None
+    if page is None:
+        where = "not in the index (orphan): skip it and tell the user to run /maintenance"
+    elif page.status != "ok":
+        where = f"[[{page.link}]] does not resolve ({page.status}): skip it and suggest /maintenance"
+    else:
+        where = page.path
+    out = [f"{label} — {describe_record(rec)}", f"   Page: {where}"]
+    if rec.get("focus"):
+        out.append(f"   Focus (new content): {rec['focus']}")
+    elif rec.get("gap"):
+        out.append(f"   Gap (ask about this idea, not a new angle): {rec['gap']['idea']}")
+    if rec.get("questions"):
+        out.append("   Recent questions: " + " | ".join(rec["questions"]))
     return out
 
 
@@ -3987,12 +4385,15 @@ def context_promote(v: Vault, extra: list) -> list:
     dup_pages = {e.page.path for entries in idx.by_key().values() if len(entries) > 1 for e in entries}
     pages = {where: cs[0].page for where, cs in candidates.items()}
     audit, held = [], []
+    waiting = open_questions(v, state, idx)
     for where in sorted(candidates):
         page = pages[where]
-        if page.status == "ok" and seal_ok(v, verified, page) and page.path not in dup_pages:
+        if page.status == "ok" and page.path not in waiting and seal_ok(v, verified, page) \
+                and page.path not in dup_pages:
             continue
         too_big = page.status == "ok" and len(read_text(v.root / page.path)) > v.limits["page_max_chars"]
-        if page.status != "ok" or too_big or page.path in dup_pages or len(audit) >= v.limits["maintenance_batch"]:
+        if page.status != "ok" or too_big or page.path in dup_pages or page.path in waiting \
+                or len(audit) >= v.limits["maintenance_batch"]:
             held.append(where)
         else:
             audit.append(page)
@@ -4001,14 +4402,13 @@ def context_promote(v: Vault, extra: list) -> list:
         out.append(f"## Audit first ({len(audit)} candidate pages without a valid seal)")
         out.append("Each page shows its vault path, then its absolute path in backticks. Open pages by the absolute path.")
         for page in audit:
-            out.append(f"### {page.path}")
-            out.append(f"Absolute path: `{(v.root / page.path).as_posix()}`")
-            out += [f"    {line}" for line in page.entry_text().splitlines()]
+            out += audit_page_lines(v, verified, page)
         out.append(f"Full index: {v.index_rel}")
+        out += removal_lines(v, idx)
         out.append("")
     if held:
         out.append(f"## Held back until /maintenance fixes them ({len(held)} pages: unresolved link, over size, "
-                   "shared names, or past the audit batch)")
+                   "shared names, open questions, or past the audit batch)")
         out += [f"  {where}" for where in held]
         out.append("")
     if query:
@@ -4067,7 +4467,7 @@ def audit_batch_lines(v: Vault, report: dict, targets=None) -> list:
                 left_out.append(f"{target}: not an indexed page")
             elif page not in pages:
                 pages.append(page)
-    batch = []
+    batch, later = [], 0
     for page in pages:
         if page.path in over or page.path in dup_pages:
             if targets is not None:
@@ -4076,13 +4476,15 @@ def audit_batch_lines(v: Vault, report: dict, targets=None) -> list:
             continue
         batch.append(page)
     if targets is None:
+        later = max(0, len(batch) - v.limits["maintenance_batch"])
         batch = batch[: v.limits["maintenance_batch"]]
     out.append(f"## Batch to audit ({len(batch)} pages; over-size pages and pages with shared names are left out)")
     out.append("Each page shows its vault path, then its absolute path in backticks. Open pages by the absolute path.")
+    verified = load_verified(v)
     for page in batch:
-        out.append(f"### {page.path}")
-        out.append(f"Absolute path: `{(v.root / page.path).as_posix()}`")
-        out += [f"    {line}" for line in page.entry_text().splitlines()]
+        out += audit_page_lines(v, verified, page)
+    if later:
+        out.append(f"Waiting for the next batch: {plural(later, 'page')}")
     if left_out:
         out.append("Left out:")
         out += [f"  - {x}" for x in left_out]
@@ -4096,6 +4498,7 @@ def cmd_audit_batch(args):
     for line in audit_batch_lines(v, report, args.pages or None):
         print(line)
     print(f"Full index: {(v.root / v.index_rel).as_posix()}")
+    print("\n".join(removal_lines(v, report["index"])).lstrip("\n"))
 
 
 def context_maintenance(v: Vault) -> list:
@@ -4113,6 +4516,7 @@ def context_maintenance(v: Vault) -> list:
     out += audit_batch_lines(v, report)
     out.append("")
     out.append(f"Full index: {v.index_rel}")
+    out += removal_lines(v, report["index"])
     out.append("")
     out.append("## Rules")
     out.append(rules_text())
@@ -4203,9 +4607,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--question", help="the question asked, in a few plain words")
     p.add_argument("--gap", help="on a fail or a retry, the idea the first answer missed, in a few plain words")
     p.set_defaults(func=cmd_record)
-    p = sub.add_parser("amend", help="correct today's answer for a concept (a contested verdict)")
+    p = sub.add_parser("defer", help="put a concept of today's list off to tomorrow, without an answer")
     p.add_argument("concept")
-    p.add_argument("result", choices=RESULTS)
+    p.set_defaults(func=cmd_defer)
+    p = sub.add_parser("amend", help="correct today's answer for a concept (a contested verdict), or undo it (void)")
+    p.add_argument("concept")
+    p.add_argument("result", choices=RESULTS + ("void",))
     p.add_argument("--gap", help="when amending to fail or retry, the idea the answer missed")
     p.set_defaults(func=cmd_amend)
     p = sub.add_parser("gap", help="open a concept's gap by hand, or close it")
@@ -4236,13 +4643,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("show", help="where concepts live in the index and what the quiz holds for them")
     p.add_argument("concepts", nargs="+")
     p.set_defaults(func=cmd_show)
-    p = sub.add_parser("flag", help="flag a page as too thin for good questions, or a concept as misplaced on it")
+    p = sub.add_parser("flag", help="flag a concept as misplaced on a page")
     p.add_argument("page")
-    p.add_argument("--note", help="for a thin page: what it leaves out, in a few words")
-    p.add_argument("--misplaced", metavar="CONCEPT", help="flag this concept as defined on the wrong page")
+    p.add_argument("--misplaced", metavar="CONCEPT", required=True, help="the concept defined on the wrong page")
     p.add_argument("--to", help="with --misplaced: where the concept belongs (a page or a subject)")
     p.set_defaults(func=cmd_flag)
-    p = sub.add_parser("unflag", help="remove a thin flag, or a misplaced flag")
+    p = sub.add_parser("unflag", help="remove a misplaced flag, or a thin flag from before 0.26.0")
     p.add_argument("page")
     p.add_argument("--misplaced", metavar="CONCEPT", help="remove the misplaced flag from this concept instead")
     p.set_defaults(func=cmd_unflag)
@@ -4258,13 +4664,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_config)
 
     sub.add_parser("check", help="deterministic maintenance checks").set_defaults(func=cmd_check)
-    p = sub.add_parser("verify", help="seal pages that passed the audit")
+    p = sub.add_parser("verify", help="seal pages with nothing pending")
     p.add_argument("pages", nargs="+")
     p.set_defaults(func=cmd_verify)
-    p = sub.add_parser("unseal", help="remove seals, e.g. from the other page of a duplicate")
+    p = sub.add_parser("reseal", help="keep the seal of pages the session only corrected (run before the commit)")
+    p.add_argument("pages", nargs="+")
+    p.set_defaults(func=cmd_reseal)
+    p = sub.add_parser("open", help="keep questions about a page that the user postponed, or close them")
+    p.add_argument("page")
+    p.add_argument("questions", nargs="*")
+    p.add_argument("--close", action="store_true")
+    p.set_defaults(func=cmd_open)
+    p = sub.add_parser("unseal", help="remove seals")
     p.add_argument("pages", nargs="+")
     p.set_defaults(func=cmd_unseal)
-    sub.add_parser("prune-seals", help="remove seals and flags of files that are gone or no longer pages").set_defaults(
+    sub.add_parser("prune-seals", help="move the seals of renamed pages; remove the seals, flags and open questions that went stale").set_defaults(
         func=cmd_prune_seals)
     p = sub.add_parser("audit-batch", help="the batch to audit for the pages given (default: the unsealed ones)")
     p.add_argument("pages", nargs="*")

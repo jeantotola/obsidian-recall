@@ -20,7 +20,7 @@ The line isn't left to the prompts alone:
 
 - a hook runs before every edit the model makes, denies the ones under `.srs/`, where the schedule, the log and the seals live, and records each note the model writes, so the script knows exactly what a session changed;
 - the agents that index, audit and judge pages get read-only tools (Read, Glob and Grep);
-- nothing is committed without your approval of its diff, except in agent review (below), where the script's checks and the judges stand in for you after you approve the plan.
+- nothing is committed without your approval of its diff, except for corrections whose exact text you approved in the plan of `/integrate` and typos you approved in `/quiz`, and in agent review (below), where the script's checks and the judges stand in for you after you approve the plan.
 
 ## Git as the review screen
 
@@ -50,7 +50,7 @@ because det(A − λI) is the product of the (a_ii − λ).
 
 `/integrate` plans the whole batch before writing anything. The model reads the blocks, groups them by subject, looks up in the index the pages that could take each group, and reads those pages and no others. The plan is a short numbered list: the page for each group, or a new page and its folder, with the blocks in didactic order. A concept that can be defined without the page's subject is split off to a page of its own subject, with a link left in its place. When a page already holds thin, misplaced or now redundant text on the subject, the plan proposes moving or rewriting it: the goal is a well-organized wiki, not the smallest change. You answer `ok` or adjust the plan.
 
-Then it goes block by block, groups from the newest to the oldest. The model writes each block where the plan puts it, keeps your wording, and marks any idea or fact of its own with a `> [!claude]` callout; a sentence that only links two pages goes in without one. A factual error in your text stays, and is pointed out in the chat instead of being fixed silently. You see the diff:
+Then it goes block by block, groups from the newest to the oldest. The model writes each block where the plan puts it, keeps your wording, and marks any idea or fact of its own with a `> [!claude]` callout; a sentence that only links two pages goes in without one. A factual error in your text is never fixed silently: the plan proposes the correction, and without your approval the text stays. You see the diff:
 
 ```diff
 --- a/Math/Eigendecomposition.md
@@ -85,7 +85,7 @@ Each concept has one owner page and a unique name, and is the size of a glossary
 Approving every diff is the default. With `integrate_review` set to `agent`, you approve the plan, and then each block is checked and committed without you:
 
 1. The script runs the checks that need no model: it repeats the index warnings, requires every new link to resolve, and allows changes to existing text only on pages the plan names.
-2. The judges read the block, the plan and the diff from a file the script prepared; the model that wrote the block only passes them its path. `diff-judge` (Haiku) checks that your wording was kept, that the block sits where the plan says, that an error in your text was kept rather than silently fixed, and that every rewrite is in the plan. `concept-judge` (Sonnet) checks that each new concept is on the page that owns it, duplicates nothing in the index and has its index line. It runs only when the script sees that the block adds a heading or a concept.
+2. The judges read the block, the plan and the diff from a file the script prepared; the model that wrote the block only passes them its path. `diff-judge` (Haiku) checks that your wording was kept, that the block sits where the plan says, that an error in your text was corrected only as the plan says, and that every rewrite is in the plan. `concept-judge` (Sonnet) checks that each new concept is on the page that owns it, duplicates nothing in the index and has its index line. It runs only when the script sees that the block adds a heading or a concept.
 3. The judges answer in a fixed format that the script parses, and a hook saves each verdict to a file as the judge finishes, so a verdict never passes through the model that wrote the block.
 4. On REVISE, the writer gets one revision, and may disagree if it says why. The script's checks run again; the judges don't.
 5. A block that fails, or whose verdict never arrives, is set aside as a patch, and you review it with the usual diff at the end of the run or another day. A missing verdict never counts as a pass.
@@ -116,11 +116,11 @@ edges are conditional dependencies. Page: [[Bayes nets]].
 
 The model judges the answer, and `srs.py record` applies it to the schedule and the log. Two algorithms are built in: Anki's classic one (SM-2) with Anki's default options, and `thirds`, which has no ease factor and keeps a third of the interval after a lapse. Every number in them is a setting. A fail also records the idea you missed, called a gap, and the concept's next questions aim at that idea until you get it right at least three days later. Gaps change what is asked, never when.
 
-The quiz tests your notes as well as your memory. A concept you keep failing, or an idea you keep missing, points to a page that doesn't work for you, and `/maintenance` lists both. Other problems need only a reading of the page: a page too thin to ask about one of its concepts, or a concept defined on the page of another subject. The quiz notices those only on the pages of the concepts that are due, so `/maintenance` looks for them on every page it audits. Without the quiz, those checks remain; the evidence that comes from your answers doesn't.
+The quiz tests your notes as well as your memory. A concept you keep failing, or an idea you keep missing, points to a page that doesn't work for you, and `/maintenance` lists both. Other problems need only a reading of the page: a statement that is wrong, a page too thin to ask about one of its concepts, or a concept defined on the page of another subject. The quiz notices those only on the pages of the concepts that are due, so `/maintenance` looks for them on every page it audits. An error the quiz finds waits for the end of the session; the concept it touches comes back the next day, with no answer recorded. Without the quiz, those checks remain; the evidence that comes from your answers doesn't.
 
 ### Maintenance
 
-`/integrate` takes care of the inbox, and `/maintenance` of the wiki, whoever edited it. It starts with the script's checks: pages over the size limit, names used twice, links that don't resolve, scheduled concepts missing from the index, pages not yet indexed. When pages were created, renamed or moved outside Recall, it first brings the index and the folder map up to date: a Haiku agent drafts the entries of the new pages, and you approve the result by diff. Then another Haiku agent reads up to 20 pages and judges each one against its index entry: every listed concept is explained, nothing important is missing, and no concept duplicates another page's under a different name. It also notes thin pages and misplaced concepts, which become flags, with their reasons, only if you approve them, and never fail the page. Every item in the report has an ID you answer by, and the session closes with the list of what was done, declined and left open. A page that passes gets a seal, which stores the git hash of the page and a hash of its index entry. Any edit breaks the seal, whether it comes through Recall or from Obsidian, without anyone having to remember to remove it, so each run audits only what changed.
+`/integrate` takes care of the inbox, and `/maintenance` of the wiki, whoever edited it. It starts with the script's checks: pages over the size limit, names used twice, links that don't resolve, scheduled concepts missing from the index, pages not yet indexed. When pages were created, renamed or moved outside Recall, it first brings the index and the folder map up to date: a Haiku agent drafts the entries of the new pages, and you approve the result by diff. Then another Haiku agent reads up to 20 pages and judges each one against its index entry: every listed concept is explained, nothing important is missing, and no concept duplicates another page's under a different name. It also notes thin pages and misplaced concepts. Its findings are leads, which the model of the session confirms before showing you, and that model also reads the pages for errors. Every item in the report has an ID you answer by, and the session closes with the list of what was done, declined and left open. A page with nothing pending gets a seal: it passed, or you decided what was found on it, and a "no" counts. The seal holds the git hash of the page and its list of concepts. Any change a reader would see breaks it, whether it comes through Recall or from Obsidian, without anyone having to remember to remove it, and the next run audits only what changed since the sealed version, which git still has. A correction you approve keeps the seal, and a question you postpone waits without another audit.
 
 When you open a session in the vault, a hook prints what is waiting, without calling the model:
 
@@ -146,6 +146,8 @@ The script's tests run it against temporary git repositories: both scheduling al
 - Whether the judges catch real problems, and how often they fail a good block. Every committed block carries its verdicts, so after a month of use the git log will show how often a judge asked for a revision, and whether the concept judge is worth its Sonnet cost.
 - How often the page auditor agrees with a careful human reading. Its criteria come from an error analysis of a practice round, not from a measurement on blind labels.
 - Whether the auditor's notes on thin pages and misplaced concepts match what the quiz finds on the same pages.
+- How many of the errors in the pages the model notices, and how often it is wrong about one.
+- Whether auditing only the change of a sealed page misses what a full audit would catch.
 - The scheduling parameters. Both algorithms run on their default values, and `srs.py stats`, which reports retention for calibration, needs a month or more of reviews.
 - Native Windows. Recall targets macOS, Linux and WSL.
 
@@ -169,7 +171,7 @@ Choose the **project** scope, so Recall's commands and hooks load only in this v
 | `/integrate [n \| file]` | After studying | Plans where the inbox blocks go, then integrates them with one diff and one commit per block |
 | `/quiz` | Daily, with the quiz on | Asks about the concepts that are due |
 | `/promote [page or topic]` | With the quiz on | Adds concepts from notes you already had to the quiz |
-| `/maintenance` | Now and then, whenever the wiki changed | Indexes new pages, checks the pages against the index, seals the ones that pass and reports the rest |
+| `/maintenance` | Now and then, whenever the wiki changed | Indexes new pages, checks the pages against the index, seals the ones with nothing pending and reports the rest |
 | `/setup` | Once | Configures the vault |
 | `/config [change]` | When your pace changes | Shows or changes the quiz, its daily pace and who reviews `/integrate` |
 
