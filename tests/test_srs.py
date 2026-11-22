@@ -884,7 +884,7 @@ class QuizOffTest(VaultCase):
 class InboxTest(VaultCase):
     def ids(self):
         out = self.srs("inbox", "list").stdout.splitlines()[1:]
-        return [line.split("[")[1].split("]")[0] for line in out]
+        return [line.split("[")[1].split("]")[0] for line in out if line.startswith("  [")]
 
     def test_list_is_newest_first_and_fences_are_ignored(self):
         self.write("inbox.md", "Intro\n\n## A\ntext\n```\n## not a heading\n```\n\n### sub\n\n## B\nmore\n")
@@ -925,6 +925,42 @@ class InboxTest(VaultCase):
         (self.vault / ".srs/config.json").write_text(json.dumps(config))
         self.write("inbox.md", "## Week 1\n### Topic A\na\n### Topic B\nb\n## Week 2\n### Topic C\nc\n")
         self.assertEqual(len(self.ids()), 3)
+
+    def test_no_heading_goes_unseen(self):
+        self.write("inbox.md", "---\nre:\n# x: y\n---\n### Orphan\na\n#### deep\n### Second\nb\n# Git\nintro\n"
+                               "## Places\nc\n### Sub\nd\n# Empty\n\n## Child\ne\n# Parent\n### Only sub\nf\n")
+        layout = srs.inbox_layout((self.vault / "inbox.md").read_text(), 2)
+        self.assertEqual([(b.title, b.under) for b in layout.blocks], [
+            ("Orphan", ""), ("Second", ""), ("Git", ""), ("Places", "# Git"), ("Child", "# Empty"), ("Parent", "")])
+        self.assertIn("### Sub\nd", layout.blocks[3].text)
+        self.assertIn("### Only sub\nf", layout.blocks[5].text)
+        self.assertEqual([(t[1], t[2]) for t in layout.titles], [("# Empty", True)])
+        self.assertEqual(layout.stray, [])
+        self.assertIn('under "# Git"', self.srs("inbox", "list").stdout)
+
+    def test_the_context_reports_stray_text_and_titles(self):
+        self.write("inbox.md", "lost\nlost too\n# Inbox\n## A\na\n")
+        out = self.srs("context", "integrate").stdout
+        self.assertIn("Text outside blocks, before any heading", out)
+        self.assertIn("lines 1-2", out)
+        self.assertIn("  # Inbox (line 3)", out)
+
+    def test_remove_title_waits_for_the_last_block_under_it(self):
+        self.write("inbox.md", "# Git\n\n## A\na\n\n# Other\ntext\n")
+        self.srs("begin", "integrate")
+        bad = self.srs("inbox", "remove-title", "# Git", check=False)
+        self.assertEqual(bad.returncode, 2)
+        self.assertIn("still has blocks under it", bad.stderr)
+        self.assertEqual(self.srs("inbox", "remove-title", "# Other", check=False).returncode, 2)
+        self.srs("inbox", "remove", self.ids()[-1])
+        self.srs("inbox", "remove-title", "# Git")
+        self.assertEqual((self.vault / "inbox.md").read_text().strip(), "# Other\ntext")
+        self.srs("commit", "-m", "integrate: remove empty headings")
+        self.srs("end")
+
+    def test_the_block_level_heading_is_a_block_even_when_empty(self):
+        self.write("inbox.md", "## Empty\n## Full\nx\n")
+        self.assertEqual(len(self.ids()), 2)
 
 
 class ReviewFlowTest(VaultCase):
@@ -1653,6 +1689,13 @@ class GapTest(VaultCase):
         self.assertEqual(self.srs("gap", "Eigenvectors", "idea", "--close", check=False).returncode, 1)
         self.assertEqual(self.srs("gap", "Nope", "idea", check=False).returncode, 2)
 
+    def test_an_answer_can_be_amended_after_a_rename(self):
+        self.answer("fail", "2026-01-12")
+        self.index("## [[Eigendecomposition]]\n- Eigenvector\n- Eigenvalues\n")
+        self.srs("rename", "Eigenvectors", "Eigenvector", today="2026-01-12")
+        self.srs("amend", "Eigenvector", "pass", today="2026-01-12")
+        self.assertIn("2026-01-12,Eigenvector,pass", (self.vault / ".srs/log.csv").read_text())
+
     def test_a_rename_carries_the_gap(self):
         self.index("## [[Eigendecomposition]]\n- Eigenvector\n- Eigenvalues\n")
         self.srs("rename", "Eigenvectors", "Eigenvector")
@@ -2141,7 +2184,8 @@ class WelcomeTest(VaultCase):
 
     def test_inbox_line_singular_plural_and_newest_first(self):
         self.write("inbox.md", "Intro.\n\n## MLflow\none\n")
-        self.assertEqual(self.welcome().splitlines()[1], "  /integrate   1 block in the inbox: MLflow")
+        self.assertEqual(self.welcome().splitlines()[1], "  /integrate   1 block in the inbox: MLflow; "
+                         "text outside blocks in the inbox (lines: 1); give it a heading")
         self.write("inbox.md", "## MLflow\none\n\n## URI e URL\ntwo\n")
         self.assertEqual(self.welcome().splitlines()[1], "  /integrate   2 blocks in the inbox: URI e URL, MLflow")
         self.set_config(language="Português")
@@ -2155,8 +2199,10 @@ class WelcomeTest(VaultCase):
         self.assertEqual(line, "  /integrate   6 blocks in the inbox: " + "L" * 39 + "…, B5, B4, +3")
 
     def test_empty_or_missing_inbox_has_no_integrate_line(self):
-        self.write("inbox.md", "Only an intro, no blocks.\n")
+        self.write("inbox.md", "---\nre:\n---\n" + (ROOT / "templates/inbox.md").read_text())
         self.assertNotIn("/integrate", self.welcome())
+        self.write("inbox.md", "Only an intro, no blocks.\n")
+        self.assertIn("/integrate   text outside blocks in the inbox (lines: 1)", self.welcome())
         (self.vault / "inbox.md").unlink()
         self.assertNotIn("/integrate", self.welcome())
 
@@ -2493,7 +2539,7 @@ class FlagTest(VaultCase):
 
 class MaintenanceToolsTest(VaultCase):
     """The script's side of fixing what /maintenance finds: what a concept costs, merging,
-    removing in bulk, the user's own edits in a session, a second audit, temporary concepts."""
+    removing in bulk, the user's own edits in a session, a second audit."""
 
     INDEX = ("## [[Eigendecomposition]]\n- Eigenvectors\n- Span (MLflow) — One step of a trace\n\n"
              "## [[Bayes]]\n- Bayes' theorem\n- Span\n- Prior\n")
@@ -2539,6 +2585,23 @@ class MaintenanceToolsTest(VaultCase):
         self.assertIn("Removed Span (MLflow) from the review schedule; Span keeps its own history", out)
         self.assertEqual(sorted(self.state()["concepts"]), ["Span"])
         self.assertEqual(self.state()["concepts"]["Span"]["interval"], 3)
+
+    def test_the_log_follows_a_history_that_changes_its_name(self):
+        log = self.vault / ".srs/log.csv"
+        head = "day,concept,result,phase,interval\r\n"
+        rows = "2026-01-01,Span (MLflow),pass,new,0\r\n2026-01-02,Prior,fail,review,1\n2026-01-03,Span (MLflow),pass,review,1\r\n"
+        self.srs("add", "--source", "promote", "Span (MLflow)", "Prior")
+        log.write_bytes((head + rows).encode())
+        self.srs("merge", "Span (MLflow)", "Span")  # inherited: the lines follow
+        self.assertEqual(log.read_bytes(), (head + rows.replace("Span (MLflow)", "Span")).encode())
+        before = log.read_bytes()
+        self.srs("merge", "Prior", "Span")  # dropped: the lines stay
+        self.assertEqual(log.read_bytes(), before)
+        self.index((self.vault / "index.md").read_text().replace("- Span\n", "- Spans, traced\n"))
+        self.srs("rename", "Span", "Spans, traced")
+        text = log.read_bytes().decode()
+        self.assertEqual(text.count('"Spans, traced"'), 2)
+        self.assertIn("2026-01-02,Prior,fail", text)
 
     def test_merge_refuses_what_it_cannot_do(self):
         self.srs("add", "--source", "promote", "Span (MLflow)")
@@ -2596,21 +2659,6 @@ class MaintenanceToolsTest(VaultCase):
         self.assertIn("Full index: ", out)
         self.assertIn("### Math/Eigendecomposition.md", self.srs("audit-batch").stdout)
 
-    def test_temporary_concepts_come_back_once_mature(self):
-        out = self.srs("add", "--source", "integrate", "--temporary", "Prior").stdout
-        self.assertIn("Queued 1 as temporary: Prior.", out)
-        self.srs("add", "--source", "integrate", "Span")
-        self.srs("temporary", "span")
-        self.assertTrue(self.state()["concepts"]["Span"]["temporary"])
-        self.set_interval("Prior", 21)
-        self.set_interval("Span", 20)
-        self.assertEqual(srs_report(self.vault)["temporary_mature"], [("Prior", 21)])
-        self.assertIn("Temporary concepts now mature (21+ days; retire them?): 1\n  - Prior (interval 21 days)",
-                      self.srs("check").stdout)
-        self.assertIn("temporary", self.srs("show", "Prior").stdout)
-        self.srs("temporary", "Prior", "--off")
-        self.assertNotIn("temporary", self.state()["concepts"]["Prior"])
-        self.assertNotEqual(self.srs("temporary", "Ghost", check=False).returncode, 0)
 
 
 class IntegrateOrderTest(unittest.TestCase):
@@ -3400,7 +3448,7 @@ class QuizOffDocsTest(unittest.TestCase):
         for command in ("srs.py show", 'srs.py merge "<duplicate>" "<owner>"', 'srs.py adopt "<path>"',
                         'srs.py audit-batch "<path>"', "srs.py remove", "srs.py prune-seals"):
             self.assertIn(command, maintenance)
-        for command in ("show", "merge", "adopt", "audit-batch", "temporary"):
+        for command in ("show", "merge", "adopt", "audit-batch"):
             self.assertIn(command, srs.build_parser()._subparsers._group_actions[0].choices)
 
     def test_the_auditor_notes_only_what_the_user_can_act_on(self):

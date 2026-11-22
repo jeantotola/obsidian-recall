@@ -69,7 +69,7 @@ because det(A - λI) is the product of the (a_ii - λ).
 A Bayes net is a directed acyclic graph of conditional dependencies.
 ```
 
-The heading level is configurable, and headings inside code blocks don't count. Recall never checks or indexes the inbox, so it can grow as large as you like.
+A `#` or `##` heading opens a block, and deeper headings stay inside it. A `#` with no text of its own is only a title for the blocks under it: `/integrate` takes it as a hint and may propose removing it once they are gone. Text before any heading isn't integrated, and Recall tells you so. The heading level is configurable, and headings inside code blocks don't count. Recall never checks or indexes the inbox, so it can grow as large as you like.
 
 ### What gets committed
 
@@ -92,14 +92,13 @@ Files you edit in Obsidian while a session is open stay out of its diff and comm
 
 ### Fixing what /maintenance finds
 
-The report gives each item an ID (F for failures, D for the script's checks, T and M for the auditor's notes, G for gaps, L for leeches, R for temporary concepts), so you can answer "F1 ok, T2 no, M1 later". Before closing, it lists what was done, declined, postponed and left open, and offers to audit again the pages changed in the session. The script's tools behind the fixes:
+The report gives each item an ID (F for failures, D for the script's checks, T and M for the auditor's notes, G for gaps, L for leeches), so you can answer "F1 ok, T2 no, M1 later". Before closing, it lists what was done, declined, postponed and left open, and offers to audit again the pages changed in the session. The script's tools behind the fixes:
 
 | Command | What it does |
 | --- | --- |
 | `srs.py show "<Concept>" ...` | Where the concept is in the index, and whether it is in the quiz, with its interval, lapses and gap: what removing it would lose |
-| `srs.py merge "<duplicate>" "<owner>"` | Folds a scheduled duplicate into the concept that keeps it: an owner outside the quiz takes over the history, a scheduled owner keeps its own |
+| `srs.py merge "<duplicate>" "<owner>"` | Folds a scheduled duplicate into the concept that keeps it: an owner outside the quiz takes over the history, log included; a scheduled owner keeps its own |
 | `srs.py remove "<Concept>" ...` | Takes concepts out of the quiz, all or none; they stay in the index |
-| `srs.py temporary "<Concept>" ... [--off]` | Marks scheduled concepts as temporary, such as a tool's commands while you learn it; `/maintenance` offers to retire them once they reach the mature interval |
 | `srs.py flag "<page>" --note "<what it leaves out>"` | Flags a thin page with its reason; a second flag adds its reason to the first |
 | `srs.py audit-batch "<page>" ...` | The batch to audit again for the pages given |
 | `srs.py prune-seals` | Removes the seals and flags left by deleted, renamed or excluded pages, and the flags of concepts that left the index |
@@ -199,7 +198,7 @@ To check retention, run `python3 <plugin folder>/scripts/srs.py stats` in the va
 | `paths.new_pages` | `wiki` | Fallback folder for new pages: where they go with `flat`, or when the vault has no thematic folders |
 | `paths.folder_map` | `folders.md` | Folder map: what each top-level folder takes, used by `/integrate` with `folders` |
 | `new_page_placement` | `folders` | `folders`: `/integrate` puts a new page in the existing folder whose topic fits best, or proposes a new folder in the vault's naming style. `flat`: every new page goes in `paths.new_pages` |
-| `inbox_heading_level` | `2` | Heading level that opens an inbox block |
+| `inbox_heading_level` | `2` | Headings of this level or higher open an inbox block |
 | `quiz` | `true` | The daily quiz. `false`: `/quiz` and `/promote` don't run and `/integrate` queues nothing; the schedule is kept as it was |
 | `integrate_review_prompt` | see below | The one-time question and the reminders while `integrate_review` is `human`. `first_days` (`14`): wait after an answer; `max_days` (`41`): the longest wait, since each "not now" doubles it; `min_commits` (`10`): blocks approved since the last answer before a reminder. `asked`, `asked_head` and `wait_days` are kept by `srs.py config`: don't edit them |
 | `integrate_review` | `human` | `human`: you approve each diff of `/integrate`. `agent`: you approve the plan, then the script's checks and the judge agents decide each block, and you supervise only the blocks they send back |

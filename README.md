@@ -67,7 +67,7 @@ Then it goes block by block, groups from the newest to the oldest. The model wri
  A = PDP⁻¹, with the eigenvalues on the diagonal of D.
 ```
 
-You approve it, ask for a change, skip the block or stop. With the quiz on, the run ends with one list: the concepts it touched, each with a suggestion to put it in the quiz or only keep it in the index. A concept worth asking only for a while, such as a tool's commands while you learn it, can go in as temporary: `/maintenance` offers to retire it once you know it.
+You approve it, ask for a change, skip the block or stop. With the quiz on, the run ends with one list: the concepts it touched, each with a suggestion to put it in the quiz or only keep it in the index.
 
 The index is a Markdown page that lists, for each page, the concepts the page explains:
 

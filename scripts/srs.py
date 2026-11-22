@@ -1109,36 +1109,95 @@ class Block:
     start: int  # first line index
     end: int  # one past the last line
     text: str
+    under: str = ""  # the closest higher heading, as context
 
 
-def parse_blocks(text: str, level: int):
-    """Blocks open at a heading of exactly `level` and run to the next heading
-    of that level or higher. Headings inside code fences don't count."""
+@dataclass
+class InboxLayout:
+    blocks: list  # Block
+    lines: list
+    titles: list  # headings above the block level with no text of their own: (line index, text, has blocks under it)
+    stray: list  # line indexes with text before any heading
+
+
+def frontmatter_end(lines: list) -> int:
+    """The index of the first line after the YAML frontmatter; 0 when there is none."""
+    if lines and lines[0].lstrip("\ufeff").rstrip() == "---":
+        for i in range(1, len(lines)):
+            if lines[i].rstrip() in ("---", "..."):
+                return i + 1
+    return 0
+
+
+def inbox_layout(text: str, level: int) -> InboxLayout:
+    """Every text under a heading belongs to a block. A heading of `level` or higher opens one and
+    deeper headings stay inside it; a deeper heading with no block open opens its own. A heading
+    higher than `level` with no text of its own is only a title. Headings inside code fences don't
+    count, and neither does the frontmatter."""
     lines = text.splitlines(keepends=True)
-    opener = re.compile(r"^#{%d}[ \t]+(.*?)[ \t#]*$" % level)
-    stopper = re.compile(r"^#{1,%d}[ \t]" % level)
-    fence = FenceTracker()
-    marks = []
-    for i, raw in enumerate(lines):
-        line = raw.rstrip("\r\n")
+    first = frontmatter_end(lines)
+    fence, marks, limit = FenceTracker(), [], 6
+    for i in range(first, len(lines)):
+        line = lines[i].rstrip("\r\n")
         if i == 0:
-            line = line.lstrip("﻿")
+            line = line.lstrip("\ufeff")
         if fence.step(line):
             continue
-        if stopper.match(line):
-            m = opener.match(line)
-            marks.append((i, m.group(1).strip() if m else None))
-    blocks, seen = [], defaultdict(int)
-    for n, (start, title) in enumerate(marks):
-        if title is None:
-            continue
+        m = re.match(r"^(#{1,6})[ \t]+(.*?)[ \t#]*$", line)
+        if m and len(m.group(1)) <= limit:
+            limit = max(level, len(m.group(1)))
+            marks.append((i, len(m.group(1)), m.group(2).strip(), line.strip()))
+    blocks, titles, seen, parents = [], [], defaultdict(int), []
+    for n, (start, depth, title, heading) in enumerate(marks):
         end = marks[n + 1][0] if n + 1 < len(marks) else len(lines)
+        parents = [p for p in parents if p[0] < depth]
+        if depth < level and not "".join(lines[start + 1:end]).strip():
+            titles.append([start, heading, False])
+            parents.append((depth, heading, titles[-1]))
+            continue
+        for _, _, entry in parents:
+            if entry is not None:
+                entry[2] = True
         body = "".join(lines[start:end])
         digest = hashlib.sha1(body.replace("\r\n", "\n").rstrip().encode("utf-8")).hexdigest()[:8]
         seen[digest] += 1
         block_id = digest if seen[digest] == 1 else f"{digest}-{seen[digest]}"
-        blocks.append(Block(id=block_id, title=title, start=start, end=end, text=body))
-    return blocks, lines
+        blocks.append(Block(id=block_id, title=title, start=start, end=end, text=body,
+                            under=parents[-1][1] if parents else ""))
+        parents.append((depth, heading, None))
+    # The line /setup writes in a new inbox is no text of the user's.
+    own = {t.strip() for t in read_text(TEMPLATES / "inbox.md").splitlines()}
+    before = range(first, marks[0][0] if marks else len(lines))
+    stray = [i for i in before if lines[i].strip() and lines[i].lstrip("\ufeff").strip() not in own]
+    return InboxLayout(blocks, lines, [tuple(t) for t in titles], stray)
+
+
+def parse_blocks(text: str, level: int):
+    layout = inbox_layout(text, level)
+    return layout.blocks, layout.lines
+
+
+def block_line(b: Block) -> str:
+    under = f', under "{b.under}"' if b.under else ""
+    return f"  [{b.id}] {b.title} ({len(b.text)} characters{under})"
+
+
+def layout_notes(layout: InboxLayout) -> list:
+    """What the inbox holds besides blocks, so that nothing in it goes unseen."""
+    out = []
+    if layout.stray:
+        out.append(f"Text outside blocks, before any heading (not processed; tell the user to give it a heading): "
+                   f"{line_span(layout.stray)}")
+    if layout.titles:
+        out.append("Headings with no text of their own (context for the blocks under them):")
+        out += [f"  {heading} (line {i + 1}{'' if children else ', no blocks under it'})"
+                for i, heading, children in layout.titles]
+    return out
+
+
+def line_span(indexes: list) -> str:
+    a, b = indexes[0] + 1, indexes[-1] + 1
+    return f"line {a}" if a == b else f"lines {a}-{b}"
 
 
 def heading_counts(text: str) -> dict:
@@ -1461,14 +1520,6 @@ def stale_flags(v: Vault, state: dict, idx: Index) -> list:
     return out
 
 
-def temporary_mature(v: Vault, state: dict) -> list:
-    """Concepts queued as temporary whose interval has reached the mature interval:
-    the user may know them well enough to retire them from the quiz."""
-    mature_at = int(v.sched["mature_interval"])
-    return [(name, int(rec.get("interval") or 0)) for name, rec in sorted(state["concepts"].items())
-            if rec.get("temporary") and int(rec.get("interval") or 0) >= mature_at]
-
-
 def run_checks(v: Vault) -> dict:
     idx, _ = load_index(v)
     state = load_state(v)
@@ -1488,7 +1539,6 @@ def run_checks(v: Vault) -> dict:
                             for name, f in state["flags"]["misplaced"].items()),
         "leeches": [],
         "stuck_gaps": [],
-        "temporary_mature": temporary_mature(v, state),
         "index": idx,
     }
     report.update(index_checks(v, idx))
@@ -1552,8 +1602,6 @@ def format_checks(v: Vault, report: dict, only=None) -> list:
         ("misplaced", "Concepts flagged as misplaced", misplaced_line),
         ("leeches", f"Leeches ({v.leech_at}+ lapses)", lambda x: f"{x[0]} ({x[1]} lapses)"),
         ("stuck_gaps", f"Gaps that won't close ({GAP_STUCK_FAILS}+ fails)", lambda x: f"{x[0]}: {x[1]} ({x[2]} fails)"),
-        ("temporary_mature", f"Temporary concepts now mature ({v.sched['mature_interval']}+ days; retire them?)",
-         lambda x: f"{x[0]} (interval {x[1]} days)"),
         ("unmapped_folders", f"Folders with pages but no row in the folder map ({v.folder_map_rel})", lambda x: x),
         ("map_rows_without_folder", f"Folder map rows that name no top-level folder ({v.folder_map_rel})",
          lambda x: x),
@@ -1981,6 +2029,29 @@ def rewrite_log_result(v: Vault, day: str, name: str, result: str):
     return None
 
 
+def rename_in_log(v: Vault, old: str, new: str) -> None:
+    """The log follows a history that changes its name. Every other byte stays as it was."""
+    path = v.srs / "log.csv"
+    if old == new or not path.exists():
+        return
+    with path.open(encoding="utf-8", newline="") as fh:
+        lines = fh.read().split("\n")
+    changed = False
+    for i in range(1, len(lines)):  # line 0 is the header
+        body = lines[i].rstrip("\r")
+        row = next(csv.reader([body]), [])
+        if len(row) >= 3 and row[1] == old:
+            row[1] = new
+            out = io.StringIO()
+            csv.writer(out, lineterminator="").writerow(row)
+            lines[i] = out.getvalue() + lines[i][len(body):]
+            changed = True
+    if changed:
+        with path.open("w", encoding="utf-8", newline="") as fh:
+            fh.write("\n".join(lines))
+        touch(v, f"{SRS_DIR}/log.csv")
+
+
 def cmd_amend(args):
     """Correct today's answer for a concept, e.g. after the user contests a verdict."""
     v = open_vault(args)
@@ -2054,35 +2125,13 @@ def cmd_add(args):
             skipped.append(name)
             continue
         state["concepts"][name] = new_record(args.source, v.today, state["next_order"])
-        if args.temporary:
-            state["concepts"][name]["temporary"] = True
         state["next_order"] += 1
         added.append(name)
     if added:
         save_state(v, state)
-    kind = " as temporary" if args.temporary and added else ""
-    print(f"Queued {len(added)}{kind}: {', '.join(added) or '-'}."
+    print(f"Queued {len(added)}: {', '.join(added) or '-'}."
           + (f" Already scheduled: {', '.join(skipped)}." if skipped else ""))
     print(queue_summary(state, v))
-
-
-def cmd_temporary(args):
-    """Mark scheduled concepts as temporary, or clear the mark: /maintenance offers to retire
-    a temporary concept from the quiz once it is mature."""
-    v = open_vault(args)
-    state = load_state(v)
-    names = [find_state_name(state, n) for n in args.concepts]
-    missing = [raw for raw, name in zip(args.concepts, names) if name is None]
-    if missing:
-        raise SrsError("Not in the review schedule: " + ", ".join(missing), 2)
-    for name in names:
-        if args.off:
-            state["concepts"][name].pop("temporary", None)
-        else:
-            state["concepts"][name]["temporary"] = True
-    save_state(v, state)
-    print(f"{', '.join(names)}: " + ("no longer temporary." if args.off else
-          "temporary; /maintenance offers to retire each one from the quiz once it is mature."))
 
 
 def cmd_update(args):
@@ -2134,6 +2183,7 @@ def cmd_rename(args):
         raise SrsError(f"'{new}' is already in the review schedule.", 2)
     state["concepts"][new] = state["concepts"].pop(old)
     save_state(v, state)
+    rename_in_log(v, old, new)
     print(f"Renamed {old} to {new}; its history is kept.")
 
 
@@ -2172,6 +2222,7 @@ def cmd_merge(args):
     kept = find_state_name(state, owner)
     if kept is None:
         state["concepts"][owner] = rec
+        rename_in_log(v, dup, owner)
         print(f"{owner} takes over the history of {dup} ({describe_record(rec)}).")
     else:
         print(f"Removed {dup} from the review schedule; {kept} keeps its own history "
@@ -2193,8 +2244,6 @@ def show_lines(v: Vault, idx: Index, state: dict, raw: str) -> list:
         out.append("  Quiz: not scheduled (index only)")
     else:
         parts = [describe_record(rec), f"due {rec.get('due') or '-'}", f"reps {rec.get('reps') or 0}"]
-        if rec.get("temporary"):
-            parts.append("temporary")
         out.append("  Quiz: " + ", ".join(parts))
         if rec.get("gap"):
             out.append(f"  Gap: {rec['gap']['idea']} ({rec['gap'].get('fails', 1)} fails)")
@@ -2603,6 +2652,14 @@ def cmd_prune_seals(args):
         print(f"Removed {plural(len(flags), 'stale flag')}: {', '.join(f'{k}: {key}' for k, key in flags)}")
 
 
+def without_lines(text: str, lines: list, drop: set) -> str:
+    new_text = "".join(line for n, line in enumerate(lines) if n not in drop)
+    if max(drop) == len(lines) - 1:  # the end of the file went: drop the blank lines left behind
+        stripped = new_text.rstrip()
+        new_text = stripped + ("\r\n" if "\r\n" in text else "\n") if stripped else ""
+    return new_text
+
+
 def cmd_inbox(args):
     v = open_vault(args)
     rel, path = block_source(v, args.file)
@@ -2610,11 +2667,27 @@ def cmd_inbox(args):
         raise SrsError(f"{rel} does not exist.")
     level = v.config["inbox_heading_level"]
     text = read_text(path)
-    blocks, lines = parse_blocks(text, level)
+    layout = inbox_layout(text, level)
+    blocks, lines = layout.blocks, layout.lines
     if args.action == "list":
         print(f"{rel}: {len(blocks)} block(s), newest first")
         for b in reversed(blocks):
-            print(f"  [{b.id}] {b.title} ({len(b.text)} characters)")
+            print(block_line(b))
+        for line in layout_notes(layout):
+            print(line)
+        return
+    if args.action == "remove-title":
+        wanted = [t.strip() for t in args.ids]
+        if len(wanted) != 1:
+            raise SrsError('Give one heading, as it is in the file: srs.py inbox remove-title "# Title"')
+        found = [t for t in layout.titles if t[1] == wanted[0]]
+        free = [t for t in found if not t[2]]
+        if not free:
+            raise SrsError(f"'{wanted[0]}' " + ("still has blocks under it." if found else
+                           f"is not a heading without text in {rel}."), 2)
+        write_text(path, without_lines(text, lines, {free[0][0]}))
+        touch(v, rel)
+        print(f"Removed the heading '{wanted[0]}' from {rel}.")
         return
     if not args.ids:
         raise SrsError("Give one or more block ids.")
@@ -2633,11 +2706,7 @@ def cmd_inbox(args):
     drop = set()
     for i in args.ids:
         drop.update(range(by_id[i].start, by_id[i].end))
-    new_text = "".join(line for n, line in enumerate(lines) if n not in drop)
-    if max(drop) == len(lines) - 1:  # the end of the file went: drop the blank lines left behind
-        stripped = new_text.rstrip()
-        new_text = stripped + ("\r\n" if "\r\n" in text else "\n") if stripped else ""
-    write_text(path, new_text)
+    write_text(path, without_lines(text, lines, drop))
     touch(v, rel)
     forget_supervision(v, args.ids)
     left = len(blocks) - len(args.ids)
@@ -2683,6 +2752,7 @@ WELCOME_STRINGS = {
         "stuck": ("lacuna que não fecha", "lacunas que não fecham"),
         "leech": ("leech", "leeches"),
         "supervision": "{n} aguardando supervisão",
+        "stray": "texto fora de blocos no inbox (linhas: {n}); dê um título a ele",
     },
     "en": {
         "interrupted": "Recall: interrupted session! Run a Recall command to recover it.",
@@ -2710,6 +2780,7 @@ WELCOME_STRINGS = {
         "stuck": ("gap that won't close", "gaps that won't close"),
         "leech": ("leech", "leeches"),
         "supervision": "{n} waiting for supervision",
+        "stray": "text outside blocks in the inbox (lines: {n}); give it a heading",
     },
 }
 WELCOME_MAX_TITLES = 3
@@ -2732,9 +2803,11 @@ def welcome_inbox(v: Vault, words: dict):
     _, path = block_source(v, None)
     if not path.is_file():
         return None
-    blocks, _ = parse_blocks(read_text(path), v.config["inbox_heading_level"])
+    layout = inbox_layout(read_text(path), v.config["inbox_heading_level"])
+    blocks = layout.blocks
+    stray = words["stray"].format(n=len(layout.stray)) if layout.stray else ""
     if not blocks:
-        return None
+        return stray or None
 
     titles = [short(b.title, 40) for b in reversed(blocks) if b.title][:WELCOME_MAX_TITLES]
     rest = len(blocks) - len(titles)
@@ -2747,7 +2820,9 @@ def welcome_inbox(v: Vault, words: dict):
                       if block_id in ids and (e.get("source") or v.inbox_rel) == v.inbox_rel)
     except Exception:  # the parked blocks are extra: never lose the inbox line over them
         waiting = 0
-    return f"{text} ({words['supervision'].format(n=waiting)})" if waiting else text
+    if waiting:
+        text += f" ({words['supervision'].format(n=waiting)})"
+    return f"{text}; {stray}" if stray else text
 
 
 def welcome_maintenance(v: Vault, state: dict, words: dict):
@@ -3706,15 +3781,15 @@ def context_integrate(v: Vault, extra: list) -> list:
     if not path.exists():
         out.append(f"## Source: {rel} — FILE NOT FOUND")
     else:
-        blocks, _ = parse_blocks(read_text(path), v.config["inbox_heading_level"])
+        layout = inbox_layout(read_text(path), v.config["inbox_heading_level"])
+        blocks = layout.blocks
         kind = "inbox" if rel == v.inbox_rel else "file (pass --file to the inbox commands)"
         out.append(f"## Source: {rel} ({kind}) — {len(blocks)} block(s), newest first")
         out.append(f"Process up to: {limit if limit else 'all'}")
-        for b in reversed(blocks):
-            out.append(f"  [{b.id}] {b.title} ({len(b.text)} characters)")
+        out += [block_line(b) for b in reversed(blocks)]
         if not blocks:
-            level = v.config["inbox_heading_level"]
-            out.append(f"  (no blocks: a block starts with a heading of level {level}, '{'#' * level} Title')")
+            out.append(f"  (no blocks: a block starts with a heading, '{'#' * v.config['inbox_heading_level']} Title')")
+        out += layout_notes(layout)
         waiting = {b: e for b, e in live_supervision(v).items() if (e.get("source") or v.inbox_rel) == rel}
         if waiting:
             out.append("")
@@ -4049,14 +4124,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("today", help="today's score").set_defaults(func=cmd_today)
     p = sub.add_parser("add", help="queue concepts for review")
     p.add_argument("--source", choices=["integrate", "promote"], required=True)
-    p.add_argument("--temporary", action="store_true",
-                   help="for now only: /maintenance offers to retire them once they are mature")
     p.add_argument("concepts", nargs="+")
     p.set_defaults(func=cmd_add)
-    p = sub.add_parser("temporary", help="mark scheduled concepts as temporary, or clear the mark with --off")
-    p.add_argument("concepts", nargs="+")
-    p.add_argument("--off", action="store_true")
-    p.set_defaults(func=cmd_temporary)
     p = sub.add_parser("update", help="mark new content for a concept in review")
     p.add_argument("concept")
     p.add_argument("--focus", required=True)
@@ -4108,8 +4177,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("audit-batch", help="the batch to audit for the pages given (default: the unsealed ones)")
     p.add_argument("pages", nargs="*")
     p.set_defaults(func=cmd_audit_batch)
-    p = sub.add_parser("inbox", help="list, show or remove inbox blocks")
-    p.add_argument("action", choices=["list", "show", "remove"])
+    p = sub.add_parser("inbox", help="list, show or remove inbox blocks, or remove a heading left empty")
+    p.add_argument("action", choices=["list", "show", "remove", "remove-title"])
     p.add_argument("ids", nargs="*")
     p.add_argument("--file", help="another file with blocks, instead of the inbox")
     p.set_defaults(func=cmd_inbox)
