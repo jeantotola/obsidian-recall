@@ -32,6 +32,12 @@ Show each error with the passage, why it is wrong in one line, and the exact tex
 
 Before committing a correction, run `srs.py reseal "<page>" ...` on the pages it touched: they keep their seal without a new audit. When it changes the core idea of a concept in the schedule, run `srs.py update "<Concept>" --focus "<what changed>"`.
 
+## The review list
+
+/integrate, /maintenance and /promote ask which concepts go into the quiz. The choice is always the user's.
+
+Show all the candidates first, in one numbered list. Then suggest, by number and with a half-line reason each, which go to review and which stay in the index only. Suggest review for concepts that are core to what the user is studying now, foundations for other concepts, subtle distinctions, or things a block got wrong. Suggest index only for author or book details, names and dates, things one looks up in seconds, and peripheral facts. If the queue line says the queue is long, suggest fewer and say why. The user answers "ok" or adjusts, for example "ok, without 3 and with 5".
+
 ## Running srs.py
 
 - Run it exactly as the command shows it, `python3 <plugin path>/scripts/srs.py <command> ...`, on its own: no `cd`, pipes, redirections or `&&`.

@@ -9,7 +9,7 @@ How to use Recall day to day, and every setting. The [README](../README.md) expl
 | `/integrate [n \| file]` | After studying | Plans where the inbox blocks go, then moves them into your pages with one diff and one commit per block (or, with [agent review](#agent-review), one commit per block the judges clear). With the quiz on, it ends with one question: which concepts go into review. |
 | `/quiz` | Every day, with the quiz on | Asks about the concepts that are due. Answer in your own words. `/config` sets how many questions a day. |
 | `/promote [page or topic]` | When you have time, with the quiz on | Adds concepts from notes you already have to the quiz, such as what you wrote before Recall. |
-| `/maintenance` | Now and then, whenever the wiki changed | Lists the concepts of pages that aren't in the index yet, checks that your pages match the list, and reports what needs fixing. |
+| `/maintenance` | Now and then, whenever the wiki changed | Adds to the index the concepts it doesn't have yet, from new pages and from pages you edited, and asks which of them go into the quiz. Then checks that your pages match the index, and reports what needs fixing. |
 | `/setup` | Once | Configures the vault. `/maintenance` then indexes the pages you already have. |
 | `/config [change]` | When your pace changes | Shows or changes whether the quiz is on, how many concepts you get per day, and whether `/integrate` is reviewed by you or by judge agents. You can also just ask for it in the conversation. |
 
@@ -30,7 +30,7 @@ Commands work by their short name when nothing else uses it; otherwise type `/re
 
 ### Without the quiz
 
-With `quiz` set to false (`/setup` asks; `/config` changes it), Recall keeps the inbox, the index and your pages in order and asks you nothing. `/integrate` skips the final list of concepts for the quiz, `/quiz` and `/promote` only say that the quiz is off, and the welcome message shows only the `/integrate` and `/maintenance` lines. The schedule stays as it was, and turning the quiz back on resumes it.
+With `quiz` set to false (`/setup` asks; `/config` changes it), Recall keeps the inbox, the index and your pages in order and asks you nothing. `/integrate` and `/maintenance` skip their lists of concepts for the quiz, `/quiz` and `/promote` only say that the quiz is off, and the welcome message shows only the `/integrate` and `/maintenance` lines. The schedule stays as it was, and turning the quiz back on resumes it.
 
 The quiz also tests your notes, and part of what it finds needs only a reading of the page: a page too thin to ask about one of its concepts, or a concept defined on the page of another subject. `/maintenance` checks both, with the quiz on or off. What only your answers can show, a concept you keep failing or an idea you keep missing, doesn't exist without the quiz.
 
@@ -82,7 +82,7 @@ A `#` or `##` heading opens a block, and deeper headings stay inside it. A `#` w
 | `quiz: 17/20` | `/quiz`, at the end, with the typos you approved; other corrections get a commit of their own |
 | `promote: N concepts` | `/promote` |
 | `maintenance: N pages verified` | `/maintenance` (with `, M stale seals removed` when it removed seals; with nothing to change it makes no commit) |
-| `maintenance: index N pages` | `/maintenance`, after you approve each batch of new pages (with `, folder map` or `, fix index links` when they changed too) |
+| `maintenance: index N pages` | `/maintenance`, after you approve each batch of new or edited pages (with `, folder map`, `, fix index links` or `, queue M concepts` when it holds them) |
 | `setup: initialize Recall` | `/setup` |
 | `config: new_per_day 5 -> 10` | `/config`, when a value changes |
 
@@ -94,12 +94,15 @@ Files you edit in Obsidian while a session is open stay out of its diff and comm
 
 ### New pages and /maintenance
 
-You can create, rename and move pages in Obsidian as you like. The next `/maintenance` brings the index and the folder map up to date before it audits anything, with one diff to approve:
+You can create, edit, rename and move pages in Obsidian as you like. The next `/maintenance` brings the index and the folder map up to date before it audits anything, with one diff to approve:
 
-- **New pages** get their entries from a Haiku agent, 20 pages per round. While there are more, it asks whether to index the next batch, go on to the audit or stop, so a large vault can be indexed over several days. Nothing goes into the quiz.
+- **New pages** get their entries from a Haiku agent, 20 pages per round. While there are more, it asks whether to index the next batch, go on to the audit or stop, so a large vault can be indexed over several days.
+- **Edited pages** get the concepts they now explain and no page in the index has. The model of the session reads them, and pages over the size limit are included.
 - **Renamed and moved pages** keep their entry: the script matches an entry that lost its page with the page that has the same text or the same file name, and only the link changes. Until that is settled, the page isn't indexed as new.
 - **Pages with nothing to index** (a to-do list, a log) are left out until they change. To leave one out for good, add it to `exclude`.
 - **New folders** get a row in the [folder map](#the-folder-map).
+
+With the quiz on, the diff comes with the list of the concepts new in the index, with a suggestion for each group: review, or index only. One answer approves the diff and picks what enters the quiz; say none, and they stay in the index, where `/promote` finds them. The same list follows any later fix that adds a concept to the index. A concept that was already in the index isn't asked about: `/promote` is for those.
 
 Answer `ok`, ask for a change, `skip` (the audit runs with the index as it was) or `stop`. When there is nothing to bring up to date, `/maintenance` goes straight to the audit.
 
@@ -219,7 +222,7 @@ Both share the rest:
 - A contested verdict is corrected with `srs.py amend "<Concept>" pass|fail|retry`, on the same study day only. The concept goes back to how it was before the answer and the answer is applied again with the new result; the next day, the answer is final.
 - New content for a concept in review, or a correction of its core idea, brings it back the next day with a question on the new part, again after 40% of its interval, and then when the interval is over: on days 0, 4 and 10 for a 10-day interval. The first two passes keep the interval; the third question is a normal review. A fail is a normal lapse. Intervals of 1 to 3 days skip the middle question.
 - A concept whose page turns out to have an error is put off to the next day without an answer (`srs.py defer`, or `srs.py amend "<Concept>" void` when it was already answered).
-- Up to 20 concepts a day: learning, relearning and updated concepts first, then reviews (most overdue first), then new concepts, at most 5 a day and only if there is room.
+- Up to 20 concepts a day: learning, relearning and updated concepts first, then reviews (most overdue first), then new concepts, at most 5 a day and only if there is room: those from `/integrate` first, then those from `/maintenance` and `/promote`, in the order they were queued.
 - A new concept waits until the next day. The study day starts at 4 a.m., so a late-night session counts as the same day.
 - A new concept also waits while the concept on the line just above or below it in the index is in the day's list, so concepts written side by side don't start, and stay, on the same days. Its slot goes to the next new concept.
 - Fuzz comes from the concept name and the day, so the same answers always give the same dates.
@@ -244,7 +247,7 @@ To check retention, run `python3 <plugin folder>/scripts/srs.py stats` in the va
 | `paths.folder_map` | `folders.md` | Folder map: what each top-level folder takes, used by `/integrate` with `folders` |
 | `new_page_placement` | `folders` | `folders`: `/integrate` puts a new page in the existing folder whose topic fits best, or proposes a new folder in the vault's naming style. `flat`: every new page goes in `paths.new_pages` |
 | `inbox_heading_level` | `2` | Headings of this level or higher open an inbox block |
-| `quiz` | `true` | The daily quiz. `false`: `/quiz` and `/promote` don't run and `/integrate` queues nothing; the schedule is kept as it was |
+| `quiz` | `true` | The daily quiz. `false`: `/quiz` and `/promote` don't run and `/integrate` and `/maintenance` queue nothing; the schedule is kept as it was |
 | `integrate_review_prompt` | see below | The one-time question and the reminders while `integrate_review` is `human`. `first_days` (`14`): wait after an answer; `max_days` (`41`): the longest wait, since each "not now" doubles it; `min_commits` (`10`): blocks approved since the last answer before a reminder. `asked`, `asked_head` and `wait_days` are kept by `srs.py config`: don't edit them |
 | `integrate_review` | `human` | `human`: you approve each diff of `/integrate`. `agent`: you approve the plan, then the script's checks and the judge agents decide each block, and you supervise only the blocks they send back |
 | `exclude` | `[]` | Patterns to ignore: `folder/`, `*.excalidraw.md`, `Daily/*.md` |

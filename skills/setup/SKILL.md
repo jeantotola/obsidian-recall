@@ -26,7 +26,7 @@ The block above comes from Recall's script. Call the script as `python3 ${CLAUDE
    - only with the quiz on, the scheduling algorithm, from the list in the block, one line each: `anki` (the default) or `thirds`. Mention that the Scheduling section of Recall's manual, `docs/usage.md`, compares them and that it can be changed later in `.srs/config.json`.
 3. Run `srs.py init` with the answers: `--quiz <on|off> --algorithm <name> --language "..." --concept-language "..." --inbox "..." --index "..." --new-pages "..." --folder-map "..." --new-page-placement <folders|flat> --heading-level N`, one `--exclude "..."` per pattern, `--algorithm` only with the quiz on, and `--git-init` only if the folder has no repository and the user agreed to create one.
 4. If it reports a missing git identity, show the two commands it prints and stop; the user runs them and then /setup again.
-5. Close with what comes next: relay the number of pages not in the index that `srs.py init` printed and, when there are any, say that /maintenance drafts the folder map (with `folders`) and indexes them, one batch at a time, and that indexing puts nothing in the quiz. From now on /integrate takes care of the inbox and /maintenance of the wiki. Don't index anything here.
+5. Close with what comes next: relay the number of pages not in the index that `srs.py init` printed and, when there are any, say that /maintenance drafts the folder map (with `folders`) and indexes them, one batch at a time, and that only the concepts they pick go into the quiz. From now on /integrate takes care of the inbox and /maintenance of the wiki. Don't index anything here.
 
 ## If Recall is already configured
 

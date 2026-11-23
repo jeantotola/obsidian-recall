@@ -396,6 +396,16 @@ class DailyListTest(unittest.TestCase):
         self.assertEqual(items, ["relearn", "rev-old", "rev-new", "new-integrate", "new-promote"])
         self.assertEqual(info["carried"], 0)
 
+    def test_new_concepts_from_maintenance_and_promote_share_a_place_after_integrate(self):
+        state = self.make({
+            "from-promote": srs.new_record("promote", D("2026-01-05"), 2),
+            "from-maintenance": srs.new_record("maintenance", D("2026-01-03"), 1),
+            "late-maintenance": srs.new_record("maintenance", D("2026-01-06"), 3),
+            "from-integrate": srs.new_record("integrate", D("2026-01-07"), 4),
+        })
+        items, _ = srs.daily_list(state, sched(), D("2026-01-10"))
+        self.assertEqual(items, ["from-integrate", "from-maintenance", "from-promote", "late-maintenance"])
+
     def test_updated_concepts_come_with_relearning(self):
         state = self.make({
             "rev-old": {"phase": "review", "due": "2026-01-01", "interval": 5},
@@ -1591,6 +1601,89 @@ class IndexBatchTest(VaultCase):
         self.assertIn("Used by /maintenance", (ROOT / "agents/index-drafter.md").read_text())
         self.assertIn("| `/setup` | Once | ", (ROOT / "README.md").read_text())
         self.assertIn("| `/setup` | Once | ", (ROOT / "docs/usage.md").read_text())
+
+
+class NewInTheIndexTest(VaultCase):
+    """/maintenance asks which of the concepts new in the index go into the quiz."""
+
+    BAYES = "## [[Bayes]]\n- Bayes' theorem\n"
+
+    def setUp(self):
+        super().setUp()
+        self.index(self.BAYES)
+        self.srs("begin", "maintenance")
+        self.srs("commit", "-m", "maintenance: index 1 pages")
+        self.srs("end")
+
+    def grow(self, command="maintenance", lines="- Posterior\n- Prior\n"):
+        self.srs("begin", command)
+        self.edit_via_hook("index.md", "# Index\n\n" + self.BAYES + lines)
+        return self.srs("diff").stdout
+
+    def test_the_diff_lists_them_with_the_queue(self):
+        out = self.grow()
+        self.assertTrue(out.startswith("New in the index (2): Posterior; Prior\nNew-concept queue: empty.\n"), out)
+
+    def test_not_the_concepts_the_index_had(self):
+        self.srs("begin", "maintenance")
+        self.edit_via_hook("Math/Bayes.md", "# Bayes\nA new text.\n")
+        self.assertNotIn("New in the index", self.srs("diff").stdout)
+        self.srs("commit", "-m", "maintenance: fix Bayes")
+        self.edit_via_hook("index.md", "# Index\n\n" + self.BAYES.replace("theorem", "theorem — a rule"))
+        self.assertNotIn("New in the index", self.srs("diff").stdout)
+
+    def test_what_stays_in_the_index_only_is_not_listed_again(self):
+        self.grow()
+        self.srs("add", "--source", "maintenance", "Posterior")
+        self.assertIn("New in the index (1): Prior\nNew-concept queue: 1 waiting", self.srs("diff").stdout)
+        self.srs("commit", "-m", "maintenance: index 1 pages, queue 1 concepts")
+        self.edit_via_hook("index.md", "# Index\n\n" + self.BAYES + "- Posterior\n- Prior\n- Likelihood\n")
+        self.assertIn("New in the index (1): Likelihood\n", self.srs("diff").stdout)
+        record = json.loads((self.vault / ".srs/state.json").read_text())["concepts"]["Posterior"]
+        self.assertEqual((record["phase"], record["source"]), ("new", "maintenance"))
+
+    def test_only_in_maintenance_and_with_the_quiz_on(self):
+        self.assertNotIn("New in the index", self.grow("integrate"))
+        self.srs("discard")
+        self.srs("end")
+        self.srs("config", "--quiz", "off")
+        out = self.grow()
+        self.assertNotIn("New in the index", out)
+        self.assertIn("+- Posterior", out)
+
+    def test_pages_out_of_the_audit_are_read_for_new_concepts(self):
+        self.assertNotIn("## Out of the audit", self.srs("context", "maintenance").stdout)
+        self.write("Math/Bayes.md", "# Bayes\n" + "long " * 1500)
+        out = self.srs("context", "maintenance").stdout
+        self.assertIn("## Out of the audit (1 page over size or with shared names)", out)
+        section = out.split("## Out of the audit")[1].split("## Batch to audit")
+        self.assertIn("### Math/Bayes.md", section[0])
+        self.assertIn("    - Bayes' theorem", section[0])
+        self.assertNotIn("### Math/Bayes.md", section[1])
+        self.assertNotIn("### Math/Bayes.md", self.srs("audit-batch").stdout)
+
+    def test_a_shared_name_is_out_of_the_audit_too(self):
+        self.index(self.BAYES + "\n## [[Eigendecomposition]]\n- Bayes' theorem\n")
+        self.assertIn("## Out of the audit (2 pages", self.srs("context", "maintenance").stdout)
+
+    def test_the_prose(self):
+        rules = (ROOT / "rules.md").read_text()
+        self.assertIn("## The review list", rules)
+        for name in ("integrate", "maintenance", "promote"):
+            skill = (ROOT / f"skills/{name}/SKILL.md").read_text()
+            self.assertRegex(skill, r"review list[^.]*, as the rules say|Review list, as the rules say", name)
+            self.assertNotIn("Suggest review for", skill, name)
+            self.assertIn(f"srs.py add --source {name} ", skill, name)
+        maintenance = (ROOT / "skills/maintenance/SKILL.md").read_text()
+        self.assertEqual(maintenance.count('"New in the index" line'), 2)
+        self.assertIn("\"Out of the audit\" section", maintenance)
+        self.assertLess(maintenance.index("**Unsealed pages**"), maintenance.index("recall:page-auditor"))
+        for text in (rules, (ROOT / "docs/design.md").read_text(), (ROOT / "docs/usage.md").read_text()):
+            self.assertIn("/maintenance", text)
+        for f in ("README.md", "docs/usage.md", "docs/design.md", "skills/setup/SKILL.md", "skills/maintenance/SKILL.md"):
+            text = (ROOT / f).read_text()
+            for old in ("Nothing goes into the quiz", "puts nothing in the", "Nothing enters the schedule"):
+                self.assertNotIn(old, text, f)
 
 
 class FolderMapTest(VaultCase):

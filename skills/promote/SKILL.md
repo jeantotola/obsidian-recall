@@ -35,7 +35,7 @@ The block above comes from Recall's script. Call the script as `python3 ${CLAUDE
    - Without one, propose a batch from the pages most recently touched by /integrate, listed first; if there are none, ask what topic the user wants to promote.
    Size the batch to the queue: new concepts enter the daily quiz a few per day, so a long queue means a long wait. Say how long the queue line in the block says it would take.
 
-2. Show one numbered list, each concept with a suggestion (review, or leave in the index) and a half-line reason. Suggest review for concepts that are core, foundational or subtle; suggest leaving author or book details, names and dates, and things one looks up in seconds. The user answers "ok" or adjusts.
+2. Show them as a review list, as the rules say.
 
 3. Apply the answer: `srs.py begin promote` (unless step 0 opened the session), then `srs.py add --source promote "<Concept>" "<Concept>" ...`, then `srs.py commit -m "promote: <N> concepts"`, then `srs.py end`.
 

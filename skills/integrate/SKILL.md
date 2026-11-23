@@ -64,10 +64,10 @@ The block above comes from Recall's script. Call the script as `python3 ${CLAUDE
 
 3d. If you noticed errors or typos after the plan was approved, show them now, as the rules say. For what the user approves: edit, `srs.py diff`, show it, and on "ok" run `srs.py reseal` on the pages and `srs.py commit -m "integrate: corrections"`.
 
-4. Review list. In one numbered list, show every concept you touched and suggest, with a half-line reason each:
+4. Review list, as the rules say, with every concept you touched:
    - new concepts: review, or index only;
    - concepts that were only in the index (unmarked): promote to review, or not.
-   Suggest review for concepts that are core to what the user is studying now, foundations for other concepts, subtle distinctions, or things the block got wrong. Suggest index only for author or book details, names and dates, things one looks up in seconds, and peripheral facts. If the queue line says the queue is long, suggest fewer and say why. Also name the concepts marked `[review]` that received new content: they are updated automatically. The user answers "ok" or adjusts, for example "ok, without 3 and with 5".
+   Also name the concepts marked `[review]` that received new content: they are updated automatically.
 
 5. Apply the answer: `srs.py add --source integrate "<Concept>" "<Concept>" ...` for the chosen concepts, and `srs.py update "<Concept>" --focus "<one line on what is new>"` for each `[review]` concept with new content or a corrected core idea. Then `srs.py commit -m "integrate: queue <N> concepts"` ("1 concept" when there is one). If nothing was chosen or updated, skip the commit.
 

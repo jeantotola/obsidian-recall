@@ -47,7 +47,7 @@ GAP_CLOSE_DAYS = 3  # a pass closes a gap once this many days have passed since 
 GAP_STUCK_FAILS = 3  # /maintenance reports a gap with this many fails
 LOG_HEADER = ["day", "concept", "result", "phase", "interval"]
 DESC_SEP = " — "  # space, em dash, space
-SOURCE_RANK = {"integrate": 0, "promote": 1}
+SOURCE_RANK = {"integrate": 0, "promote": 1, "maintenance": 1}
 EXCLUSION_HINTS = ("template", "attachment", "asset", "excalidraw", "daily", "journal", "archive")
 PHASES = ("new", "learning", "review", "relearning")
 HOLD_SHARE = 0.4  # new content: the second question comes after this share of the interval
@@ -101,7 +101,8 @@ DEFAULT_CONFIG = {
     "paths": {"inbox": "inbox.md", "index": "index.md", "new_pages": "wiki", "folder_map": "folders.md"},
     "new_page_placement": "folders",
     "inbox_heading_level": 2,
-    # The daily quiz. Off: no /quiz or /promote, and /integrate queues nothing; the schedule is kept as it is.
+    # The daily quiz. Off: no /quiz or /promote, and /integrate and /maintenance queue nothing; the schedule is
+    # kept as it is.
     "quiz": True,
     "integrate_review": "human",  # human: the user approves each diff; agent: judge agents review it
     # The one-time question and the reminders to try the agent review while the mode is human.
@@ -2060,6 +2061,12 @@ def cmd_diff(args):
     if not paths:
         print("No changes to review.")
         return
+    if session.get("command") == "maintenance" and v.quiz and v.index_rel in paths:
+        state = load_state(v)
+        new = [name for name in new_index_concepts(v) if not find_state_name(state, name)]
+        if new:
+            print(f"New in the index ({len(new)}): {'; '.join(new)}")
+            print(queue_summary(state, v) + "\n")
     print(render_diff(v, repo, changed, paths))
 
 
@@ -2685,7 +2692,8 @@ def quiz_line(v: Vault) -> str:
     if v.quiz:
         return "Quiz: on (/quiz asks the concepts due each day)."
     kept = len(load_state(v)["concepts"])
-    return ("Quiz: off. /quiz and /promote don't run, and /integrate doesn't ask which concepts to review."
+    return ("Quiz: off. /quiz and /promote don't run, and /integrate and /maintenance don't ask which concepts to "
+            "review."
             + (f" The schedule is kept as it is ({plural(kept, 'concept')}) until the quiz is turned back on."
                if kept else ""))
 
@@ -4491,6 +4499,22 @@ def audit_batch_lines(v: Vault, report: dict, targets=None) -> list:
     return out
 
 
+def unaudited_lines(v: Vault, report: dict) -> list:
+    """The unsealed pages the audit leaves out (over size, or with a shared name): what they explain
+    still belongs in the index."""
+    over = {p for p, _ in report["over_size"]}
+    shared = {e.page.path for entries in report["index"].by_key().values() if len(entries) > 1 for e in entries}
+    pages = [p for p in report["unverified"] if p.path in over or p.path in shared]
+    if not pages:
+        return []
+    verified = load_verified(v)
+    out = ["", f"## Out of the audit ({plural(len(pages), 'page')} over size or with shared names): only for new "
+           "concepts, not for the auditor"]
+    for page in pages:
+        out += audit_page_lines(v, verified, page)
+    return out
+
+
 def cmd_audit_batch(args):
     """The batch to audit again, for the pages changed during a session."""
     v = open_vault(args)
@@ -4512,6 +4536,7 @@ def context_maintenance(v: Vault) -> list:
     out.append("## To index")
     out += index_batch_lines(v, report)
     out += folder_map_lines(v)
+    out += unaudited_lines(v, report)
     out.append("")
     out += audit_batch_lines(v, report)
     out.append("")
@@ -4622,7 +4647,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_gap)
     sub.add_parser("today", help="today's score").set_defaults(func=cmd_today)
     p = sub.add_parser("add", help="queue concepts for review")
-    p.add_argument("--source", choices=["integrate", "promote"], required=True)
+    p.add_argument("--source", choices=["integrate", "promote", "maintenance"], required=True)
     p.add_argument("concepts", nargs="+")
     p.set_defaults(func=cmd_add)
     p = sub.add_parser("update", help="mark new content for a concept in review")
