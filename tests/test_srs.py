@@ -4025,6 +4025,7 @@ class QuizOffDocsTest(unittest.TestCase):
         self.assertIn("tools: Read, Glob, Grep\n", front)
         self.assertIn("NOTE <path> — T:", text)
         self.assertIn("NOTE <path> — M:", text)
+        self.assertIn("NOTE <path> — R:", text)
         self.assertIn("a page with notes still passes", text)
         self.assertIn("a note never stands in for a failure", text)
         self.assertIn("Only for a concept that passes A", text)
@@ -4033,6 +4034,7 @@ class QuizOffDocsTest(unittest.TestCase):
         self.assertIn("FAIL <path> — C?:", text)
         maintenance = (ROOT / "skills/maintenance/SKILL.md").read_text()
         self.assertIn("for an M note, ask whether to flag it", maintenance)
+        self.assertIn("would this page lose anything?", maintenance)
         promote = (ROOT / "skills/promote/SKILL.md").read_text()
         for name, text in (("maintenance", maintenance), ("promote", promote)):
             self.assertIn("for a T note, offer an incomplete callout", text, name)

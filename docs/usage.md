@@ -105,7 +105,7 @@ Answer `ok`, ask for a change, `skip` (the audit runs with the index as it was) 
 
 ### Fixing what /maintenance finds
 
-The report gives each item an ID (Q for questions you postponed before, E for errors, F for failures, D for the script's checks, T and M for the auditor's notes, G for gaps, L for leeches), so you can answer "F1 ok, E2 no, M1 later". The auditor's findings are leads: the model opens the page, and looks in the index's git history for concepts you removed, before showing you anything. What you answer decides the seal:
+The report gives each item an ID (Q for questions you postponed before, E for errors, F for failures, D for the script's checks, T, M and R for the auditor's notes, G for gaps, L for leeches), so you can answer "F1 ok, E2 no, M1 later". The auditor's findings are leads: the model opens the page, and looks in the index's git history for concepts you removed, before showing you anything. What you answer decides the seal:
 
 - **Corrected:** the page is sealed without another audit.
 - **No**, to a failure: the page is sealed as it is, so the same question doesn't come back while the page stays as it is.
