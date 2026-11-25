@@ -4245,8 +4245,8 @@ class ReviewAgentsTest(unittest.TestCase):
 class InboxHeaderTest(VaultCase):
     """The header at the top of the inbox, and what /integrate asks about it."""
 
-    PT = "Escreva um bloco por assunto, separe-os em `# Tema` e `## Subtema`."
-    EN = "Write one block per subject, separated into `# Theme` and `## Subtheme`."
+    PT = "> [!info]- Como usar este inbox"
+    EN = "> [!info]- How to use this inbox"
 
     def config(self, vault=None):
         return json.loads(((vault or self.vault) / ".srs/config.json").read_text())
@@ -4273,10 +4273,11 @@ class InboxHeaderTest(VaultCase):
 
     def test_the_example_follows_the_heading_level(self):
         other = self.fresh("--heading-level", "3")
-        self.assertEqual((other / "inbox.md").read_text().splitlines()[0],
-                         "Write one block per subject, separated into `# Theme` and `### Subtheme`.")
-        self.assertEqual(srs.inbox_header_lines("English", 1)[0],
-                         "Write one block per subject, each starting with a `# Title`.")
+        lines = (other / "inbox.md").read_text().splitlines()
+        self.assertEqual(lines[2:4], ["> # Theme", "> ### First subject"])
+        flat = srs.inbox_header_lines("English", 1)
+        self.assertEqual(flat[2:4], ["> # First subject", "> Your text. {CLAUDE: a note for /integrate}"])
+        self.assertNotIn("> # Theme", flat)
 
     def test_an_existing_inbox_is_left_alone_and_unset(self):
         self.assertEqual(self.config()["inbox_header"], "unset")
@@ -4290,10 +4291,22 @@ class InboxHeaderTest(VaultCase):
                 self.assertEqual(layout.stray, [], (language, level))
                 self.assertTrue(layout.header)
                 self.assertEqual([b.title for b in layout.blocks], ["Block"])
+        for language in ("English", "português"):
+            for level in (1, 2, 3):
+                text = "\n\n".join(srs.old_header_lines(language, level)) + "\n\n" + "#" * level + " A\na\n"
+                self.assertEqual(srs.inbox_layout(text, level).stray, [], (language, level))
+                self.assertTrue(srs.inbox_layout(text, level).header)
         old = srs.LEGACY_INBOX_LINE + "\n\n## A\na\n"
         self.assertEqual(srs.inbox_layout(old, 2).stray, [])
         self.assertFalse(srs.inbox_layout(old, 2).header)
         self.assertEqual(srs.inbox_layout("Intro.\n\n## A\na\n", 2).stray, [0])
+
+    def test_the_example_in_the_header_is_neither_a_block_nor_a_note(self):
+        text = "\n".join(srs.inbox_header_lines("English", 2)) + "\n\n## Real\nbody {CLAUDE: one}\n"
+        layout = srs.inbox_layout(text, 2)
+        self.assertEqual([b.title for b in layout.blocks], ["Real"])
+        self.assertEqual(layout.titles, [])
+        self.assertEqual(srs.count_notes(layout.blocks[0].text), 1)
 
     def test_unset_asks_once_and_a_header_or_off_silences_it(self):
         self.assertIn("## Inbox header: this inbox has none", self.header_section())
@@ -4321,9 +4334,9 @@ class InboxHeaderTest(VaultCase):
         self.srs("begin", "integrate")
         self.assertIn("Wrote the header", self.srs("inbox", "header").stdout)
         text = (self.vault / "inbox.md").read_text()
-        self.assertTrue(text.startswith("---\nre:\n---\n\n" + self.EN + "\n"), text)
+        self.assertTrue(text.startswith("---\nre:\n---\n" + self.EN + "\n"), text)
         self.assertNotIn(srs.LEGACY_INBOX_LINE, text)
-        self.assertTrue(text.endswith("---\n\n## First\none\n"), text)
+        self.assertTrue(text.endswith("never goes into the page.\n\n## First\none\n"), text)
         layout = srs.inbox_layout(text, 2)
         self.assertEqual([b.id for b in layout.blocks], before)
         self.assertEqual(layout.stray, [])

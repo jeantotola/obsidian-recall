@@ -73,19 +73,22 @@ A `#` or `##` heading opens a block, and deeper headings stay inside it. A `#` w
 
 #### The header
 
-`/setup` writes a short header at the top of a new inbox, after the properties if the file has any. In English:
+`/setup` writes a short header at the top of a new inbox, after the properties if the file has any: a folded callout that opens on an example of blocks and a note. In English:
 
 ```markdown
-Write one block per subject, separated into `# Theme` and `## Subtheme`.
-
-Leave a note for /integrate inside a block: {CLAUDE: your note}.
-Example: {CLAUDE: keep this apart from the block above}.
-The note never goes into the page.
-
----
+> [!info]- How to use this inbox
+> ```markdown
+> # Theme
+> ## First subject
+> Your text. {CLAUDE: a note for /integrate}
+>
+> ## Second subject
+> More text.
+> ```
+> The note in braces is for /integrate and never goes into the page.
 ```
 
-It is in Portuguese when `language` contains "portugu" or starts with "pt". The `##` follows `inbox_heading_level`. The header is not text of yours: Recall doesn't report it as text outside blocks, nor does it count the notes in its examples. The `inbox_header` setting records what you decided:
+It is in Portuguese when `language` contains "portugu" or starts with "pt". The `##` follows `inbox_heading_level`, and with level 1 the example has no theme. The header is not text of yours: Recall doesn't report it as text outside blocks, doesn't take its example for blocks, and doesn't count the note in it. The 0.29.0 header, plain lines and a rule, is still recognized. The `inbox_header` setting records what you decided:
 
 - `on`: `/setup` wrote the header. If it is gone, `/integrate` asks once whether to put it back. Deleting it on purpose and answering no turns the setting `off`.
 - `off`: `/integrate` never asks, and the inbox is not touched.

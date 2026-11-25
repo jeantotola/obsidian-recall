@@ -30,7 +30,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-VERSION = "0.29.0"
+VERSION = "0.29.1"
 SRS_DIR = ".srs"
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 TEMPLATES = PLUGIN_ROOT / "templates"
@@ -1266,27 +1266,31 @@ def describe_answer(name: str, before: str, rec: dict, today: dt.date, leech_at:
 # ---------------------------------------------------------------------------
 
 
-# The header at the top of an inbox: how a block is written and how a note is left. {h} is the heading of
-# a block. It is in Portuguese when the vault's language is, and in English otherwise.
-INBOX_HEADER = {
+# The header at the top of an inbox: a folded callout with an example of blocks and a note. {h} is the
+# heading of a block. It is in Portuguese when the vault's language is, and in English otherwise.
+INBOX_HEADER_TEXT = {
+    "en": {"title": "How to use this inbox", "theme": "Theme", "first": "First subject",
+           "second": "Second subject", "text": "Your text. {CLAUDE: a note for /integrate}",
+           "more": "More text.",
+           "foot": "The note in braces is for /integrate and never goes into the page."},
+    "pt": {"title": "Como usar este inbox", "theme": "Tema", "first": "Primeiro assunto",
+           "second": "Segundo assunto", "text": "Seu texto. {CLAUDE: um recado para o /integrate}",
+           "more": "Outro texto.",
+           "foot": "A nota entre chaves é para o /integrate e nunca vai para a página."},
+}
+# What the header was in 0.29.0: plain lines and a rule. Still not text of the user's.
+INBOX_HEADER_0_29_0 = {
     "en": ["Write one block per subject, separated into `# Theme` and `{h} Subtheme`.",
-           "",
            "Leave a note for /integrate inside a block: {CLAUDE: your note}.",
            "Example: {CLAUDE: keep this apart from the block above}.",
-           "The note never goes into the page.",
-           "",
-           "---"],
+           "The note never goes into the page.", "---"],
     "pt": ["Escreva um bloco por assunto, separe-os em `# Tema` e `{h} Subtema`.",
-           "",
            "Deixe uma nota para o /integrate dentro de um bloco: {CLAUDE: sua nota}.",
            "Exemplo: {CLAUDE: não junte este bloco com o anterior}.",
-           "A nota nunca vai para a página.",
-           "",
-           "---"],
+           "A nota nunca vai para a página.", "---"],
 }
-# With blocks at level 1 there is no theme above them.
-INBOX_HEADER_FIRST_FLAT = {"en": "Write one block per subject, each starting with a `{h} Title`.",
-                           "pt": "Escreva um bloco por assunto, cada um começando com um título `{h} Título`."}
+INBOX_HEADER_0_29_0_FLAT = {"en": "Write one block per subject, each starting with a `{h} Title`.",
+                            "pt": "Escreva um bloco por assunto, cada um começando com um título `{h} Título`."}
 # The line /setup wrote in an inbox before the header existed.
 LEGACY_INBOX_LINE = ("Write here as you study, one block per subject, each starting with a heading. Put new "
                      "blocks at the end, and run /integrate when you finish a study session.")
@@ -1299,17 +1303,30 @@ def language_code(language) -> str:
 
 
 def inbox_header_lines(language, level: int) -> list:
+    t = INBOX_HEADER_TEXT[language_code(language)]
+    h = "#" * level
+    example = ["```markdown"]
+    if level > 1:
+        example.append(f"# {t['theme']}")
+    example += [f"{h} {t['first']}", t["text"], "", f"{h} {t['second']}", t["more"], "```"]
+    lines = [f"[!info]- {t['title']}"] + example + [t["foot"]]
+    return [("> " + line).rstrip() for line in lines]
+
+
+def old_header_lines(language, level: int) -> list:
     code = language_code(language)
-    lines = list(INBOX_HEADER[code])
+    lines = list(INBOX_HEADER_0_29_0[code])
     if level == 1:
-        lines[0] = INBOX_HEADER_FIRST_FLAT[code]
+        lines[0] = INBOX_HEADER_0_29_0_FLAT[code]
     return [line.replace("{h}", "#" * level) for line in lines]
 
 
-# Every line the header has ever had, at every level and in both languages: none of them is text of the user's.
-INBOX_HEADER_FIRSTS = {inbox_header_lines(code, n)[0] for code in INBOX_HEADER for n in range(1, 7)}
-INBOX_OWN_LINES = ({line for code in INBOX_HEADER for n in range(1, 7) for line in inbox_header_lines(code, n)
-                    if line.strip()} | {LEGACY_INBOX_LINE})
+# Every line the header has had, at every level and in both languages: none of them is text of the user's.
+INBOX_HEADER_FIRSTS = ({inbox_header_lines(code, 1)[0] for code in INBOX_HEADER_TEXT}
+                       | {old_header_lines(code, n)[0] for code in INBOX_HEADER_TEXT for n in range(1, 7)})
+INBOX_OWN_LINES = ({line for code in INBOX_HEADER_TEXT for n in range(1, 7)
+                    for line in inbox_header_lines(code, n) + old_header_lines(code, n) if line.strip()}
+                   | {LEGACY_INBOX_LINE})
 
 # A note the user leaves for /integrate inside an inbox block.
 NOTE_RE = re.compile(r"\{\s*CLAUDE\b[^}]*\}")
@@ -1409,7 +1426,7 @@ def with_inbox_header(text: str, language, level: int) -> str:
     if front and not front.endswith("\n"):
         front += nl
     head = nl.join(inbox_header_lines(language, level)) + nl
-    return front + (nl if front else "") + head + nl + "".join(rest)
+    return front + head + nl + "".join(rest)
 
 
 def parse_blocks(text: str, level: int):
