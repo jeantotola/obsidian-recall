@@ -39,7 +39,9 @@ The inbox (default `inbox.md`) is the single page you write in, one block per su
 
 - A heading of the configured level (default 2) or higher opens a block, which runs to the next one. Deeper headings stay inside the open block; with none open, a deeper heading opens its own. Headings inside code fences and the frontmatter don't count. The script only decides what is seen: how the blocks relate is the plan's job, with the closest higher heading shown as a hint. A block cut too large or too small can be split or grouped in the plan; text that isn't seen can't be fixed there.
 - A higher heading with no text before the next block is only a title, shown as context. The plan may propose removing it (`srs.py inbox remove-title`) once the last block under it is gone.
-- Text before any heading is kept, never processed and reported, in `/integrate` and in the welcome message. The line /setup writes in a new inbox doesn't count.
+- Text before any heading is kept, never processed and reported, in `/integrate` and in the welcome message. Recall's own header doesn't count, in any of its versions, nor does the line `/setup` wrote before the header existed.
+- A new inbox starts with a header (`inbox_header`). The script writes it, in the configured language and heading level, so that it needs no model and a test can compare it. A vault that never decided is asked once by `/integrate`; a header that was there and is gone is asked about once more; a no ends the question. Nothing restores it silently, because the inbox is the user's file. The question comes from the script's context block and the answer from `srs.py config` and `srs.py inbox header`, not from a command the model calls on its own: `/setup` can't be invoked by the model, and it does nothing in a vault already set up.
+- A `{CLAUDE: ...}` inside a block is a note from the user to `/integrate`. The script counts the notes of each block, so the model can't overlook one and the plan can close with an exact number. A hook denies a write that would carry one into a page, because a rule alone doesn't stop a model from quoting what it was just told. The notes stay free text and have no scope syntax: one that covers every block says so in words, and the model reads it.
 - New blocks go at the end; `/integrate` runs the groups of blocks from the end backwards, so today's notes come first.
 - Integrated blocks leave the inbox in the same commit as their integration; the original text stays in git history.
 - Skipped blocks stay where they are.
@@ -213,7 +215,7 @@ Leeches are where the review and the vault meet: a concept that keeps failing po
 
 ## /setup
 
-On a vault without Recall, `/setup` asks for the conversation language, the concept language, the paths, where new pages go (`folders` or `flat`), the heading level of inbox blocks, the exclusions, suggesting folders it detects (templates, daily notes, Excalidraw drawings), whether to turn on the daily quiz, and, with the quiz on, the scheduling algorithm. It then runs `srs.py init`, which creates the git repository if needed (after asking), commits the vault's current content, writes `.srs/`, creates the inbox and the index if missing, completes `.gitignore`, and commits.
+On a vault without Recall, `/setup` asks for the conversation language, the concept language, the paths, where new pages go (`folders` or `flat`), the heading level of inbox blocks, the exclusions, suggesting folders it detects (templates, daily notes, Excalidraw drawings), whether to turn on the daily quiz, and, with the quiz on, the scheduling algorithm. It then runs `srs.py init`, which creates the git repository if needed (after asking), commits the vault's current content, writes `.srs/`, creates the inbox, with its header, and the index if missing, completes `.gitignore`, and commits.
 
 It runs once. The folder map and the indexing of the pages that already exist belong to [/maintenance](#maintenance), which does the same for the pages and folders that come later. `/setup` ends by saying how many pages are waiting for it.
 
@@ -239,6 +241,7 @@ Three hooks are registered in `hooks/hooks.json`: the guard, the welcome message
 
 - It denies direct edits to `.srs/`.
 - While a session is open, it allows edits to Markdown notes outside hidden folders without a permission prompt, and records each file in the session. The git diff is the review, so this behaves the same in every permission mode.
+- It denies a write to a page that carries a `{CLAUDE: ...}` note, in or out of a session. The inbox (the configured path) and the rules files `CLAUDE.md`, `CLAUDE.local.md` and `AGENTS.md` are free. Only Edit, Write and the other editing tools are looked at; a page written through Bash isn't, and `/integrate` doesn't write that way.
 - It allows Bash to run the plugin's own `srs.py` without a prompt, but only when the command is exactly that script, with no shell operators, redirections or substitutions.
 - In any other case it gives no opinion, and in folders where Recall isn't set up it does nothing.
 
@@ -263,7 +266,7 @@ Three hooks are registered in `hooks/hooks.json`: the guard, the welcome message
 - **Roles, not names.** The inbox, the index, the folder map, the new-pages folder, the new-page placement and the inbox heading level are configuration. `/setup` warns about existing files or folders with similar names, such as an `Inbox/` folder.
 - **Exclusions.** Recall always ignores the inbox, the index, the folder map, `CLAUDE.md` and `AGENTS.md` files, and hidden folders. The `exclude` list adds patterns: `folder/` for a folder, `*.excalidraw.md` for file names anywhere, `Daily/*.md` for paths.
 - **Preferences are editable defaults.** The conversation language, the concept language and the quiz rules.
-- **English everywhere it's published.** Skills, script, commit messages and documentation are in English; Claude talks to you in the configured language. The welcome message's Portuguese strings are the one exception (see The hooks).
+- **English everywhere it's published.** Skills, script, commit messages and documentation are in English; Claude talks to you in the configured language. The Portuguese strings of the welcome message and of the inbox header are the exceptions (see The hooks): they are text the user reads in their own language.
 - **Requirements.** Claude Code, git and Python 3.8 or later, standard library only. Targets macOS, Linux and WSL; native Windows is untested.
 
 ## To revisit
@@ -278,6 +281,8 @@ Three hooks are registered in `hooks/hooks.json`: the guard, the welcome message
 - **The rest of the /maintenance flow (0.23.0).** IDs per item, the list of decisions before closing, the second audit of changed pages and the review of your Obsidian edits came from one long session. Check after a few runs whether they make answering cheaper or only make the report longer.
 - **The review list in /maintenance (0.28.0).** Check after a month how many concepts were offered and how many chosen, how many still came from criterion B, and whether the list made the session heavier. In the author's vault, 218 names entered the index through `/maintenance` and the old `/setup` in 27 days, on 10 of them, with a median of 17 or 18 and some renames included; 31% of those still there were in the quiz, against 74% of the ones from `/integrate`.
 - **Indexing inside /maintenance.** Check after a few runs whether the first step stays short in daily use, whether renames are recognized without help, and whether pages with nothing to index that change often, such as a log, come back too much. The auditor now sees an index that includes the new pages, so its B, C and M results before and after this change aren't directly comparable.
+- **The inbox header and notes (0.29.0).** Check after a month whether the header stays or you delete it, how many notes you leave and of what kind, and whether the plan's line per note is read or only skipped. The notes came from a rule and a hook in the author's vault, used for a few days before they moved into the plugin.
+- **Blocks at any level.** The script takes one level for blocks, `inbox_heading_level`. A `# Theme` with `### Subtheme` under it, or two `#` in a row as theme and subtheme, doesn't work with level 2: the first makes the theme the block, the second leaves the theme with no blocks. Reading the depth from the headings would remove that rule, but it changes the id of existing blocks, which `.srs/review` keeps, so it needs its own change.
 - **Algorithm parameters, limits and leech thresholds.** Calibrate with `srs.py stats` after a month of use.
 - **Gaps.** After a month of use, check the pass rate on gap questions and how many gaps won't close, and adjust the 3 days and the 3 fails. If failed ideas keep being ones never asked before, reconsider how much coverage matters.
 - **Time per question.** Without the fork, each question waits for its page to be read. `srs.py record` could print the next concept's passage from its page along with the next count, saving that read. Measure where the seconds go first, then check that question quality holds.

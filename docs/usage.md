@@ -17,7 +17,7 @@ Commands work by their short name when nothing else uses it; otherwise type `/re
 
 ### A day with Recall
 
-1. **Study and write.** Add blocks at the end of `inbox.md`, each starting with a `##` heading of a few words. A date in the heading is fine.
+1. **Study and write.** Add blocks at the end of `inbox.md`, each starting with a `##` heading of a few words. A date in the heading is fine. To ask something of `/integrate` about a passage, leave a [note](#notes-for-integrate) inside the block.
 2. **Run `/integrate`.** It goes in three steps, and each one waits for your answer:
    - **The plan.** Claude groups the blocks by subject and shows where each group goes: an existing page, a new page or sections of one page. Inside a group, blocks follow a didactic order. Answer `ok` or adjust it.
    - **One diff per block.** Claude adds the block at its place in the plan, without rewriting what's already there, and shows you the git diff. Groups run from the newest to the oldest. Approve, ask for a change, skip the block (it stays in the inbox) or stop.
@@ -70,6 +70,38 @@ A Bayes net is a directed acyclic graph of conditional dependencies.
 ```
 
 A `#` or `##` heading opens a block, and deeper headings stay inside it. A `#` with no text of its own is only a title for the blocks under it: `/integrate` takes it as a hint and may propose removing it once they are gone. Text before any heading isn't integrated, and Recall tells you so. The heading level is configurable, and headings inside code blocks don't count. Recall never checks or indexes the inbox, so it can grow as large as you like.
+
+#### The header
+
+`/setup` writes a short header at the top of a new inbox, after the properties if the file has any. In English:
+
+```markdown
+Write one block per subject, separated into `# Theme` and `## Subtheme`.
+
+Leave a note for /integrate inside a block: {CLAUDE: your note}.
+Example: {CLAUDE: keep this apart from the block above}.
+The note never goes into the page.
+
+---
+```
+
+It is in Portuguese when `language` contains "portugu" or starts with "pt". The `##` follows `inbox_heading_level`. The header is not text of yours: Recall doesn't report it as text outside blocks, nor does it count the notes in its examples. The `inbox_header` setting records what you decided:
+
+- `on`: `/setup` wrote the header. If it is gone, `/integrate` asks once whether to put it back. Deleting it on purpose and answering no turns the setting `off`.
+- `off`: `/integrate` never asks, and the inbox is not touched.
+- `unset` (the default of a vault set up before 0.29.0, or one whose inbox already existed): `/integrate` asks once, shows the header and writes it on a yes, as its own commit, `integrate: inbox header`.
+
+`/config` turns it on or off. `srs.py inbox header` writes it into a session; it does nothing when the header is already there.
+
+#### Notes for /integrate
+
+A `{CLAUDE: ...}` inside a block is an instruction or a question for `/integrate`, in your own words, about the passage where it sits: "only the index", "keep this apart from the block above", "is this the same as X?". A note that should cover every block says so in its text.
+
+- It shows up in the plan, under its group, with what will be done about it, and the plan ends with how many notes it covers. A doubt about a note is asked in the plan, and the plan is saved with `srs.py plan save` also in manual review, so the end of the run can read it again.
+- A note is a request, not an approval: the plan still needs your ok, and a note that asks for a correction of your text only authorizes the exact change the plan shows.
+- It never goes into a page. The guard denies a write to a page that carries one, and only the inbox and the rules files (`CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`) may hold the text.
+- Don't delete it from the inbox during the run: that would change the id of its block. It leaves with the block, in the same commit.
+- The block list of `/integrate` and `srs.py inbox list` count the notes of each block.
 
 ### What gets committed
 
@@ -235,7 +267,7 @@ To check retention, run `python3 <plugin folder>/scripts/srs.py stats` in the va
 
 ## Configuration
 
-`/setup` writes `.srs/config.json` in your vault. Use `/config`, or just ask, to change `quiz`, `scheduling.daily_limit`, `scheduling.new_per_day`, `scheduling.retry` and `integrate_review`; edit the file by hand for the rest.
+`/setup` writes `.srs/config.json` in your vault. Use `/config`, or just ask, to change `quiz`, `scheduling.daily_limit`, `scheduling.new_per_day`, `scheduling.retry`, `integrate_review` and `inbox_header`; edit the file by hand for the rest.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -247,6 +279,7 @@ To check retention, run `python3 <plugin folder>/scripts/srs.py stats` in the va
 | `paths.folder_map` | `folders.md` | Folder map: what each top-level folder takes, used by `/integrate` with `folders` |
 | `new_page_placement` | `folders` | `folders`: `/integrate` puts a new page in the existing folder whose topic fits best, or proposes a new folder in the vault's naming style. `flat`: every new page goes in `paths.new_pages` |
 | `inbox_heading_level` | `2` | Headings of this level or higher open an inbox block |
+| `inbox_header` | `unset` | The short header at the top of the inbox ([The header](#the-header)): `on`, `off`, or `unset` until `/integrate` asks. `/setup` sets `on` in an inbox it creates |
 | `quiz` | `true` | The daily quiz. `false`: `/quiz` and `/promote` don't run and `/integrate` and `/maintenance` queue nothing; the schedule is kept as it was |
 | `integrate_review_prompt` | see below | The one-time question and the reminders while `integrate_review` is `human`. `first_days` (`14`): wait after an answer; `max_days` (`41`): the longest wait, since each "not now" doubles it; `min_commits` (`10`): blocks approved since the last answer before a reminder. `asked`, `asked_head` and `wait_days` are kept by `srs.py config`: don't edit them |
 | `integrate_review` | `human` | `human`: you approve each diff of `/integrate`. `agent`: you approve the plan, then the script's checks and the judge agents decide each block, and you supervise only the blocks they send back |

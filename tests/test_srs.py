@@ -2894,7 +2894,7 @@ class WelcomeTest(VaultCase):
         self.assertEqual(line, "  /integrate   6 blocks in the inbox: " + "L" * 39 + "…, B5, B4, +3")
 
     def test_empty_or_missing_inbox_has_no_integrate_line(self):
-        self.write("inbox.md", "---\nre:\n---\n" + (ROOT / "templates/inbox.md").read_text())
+        self.write("inbox.md", "---\nre:\n---\n" + "\n".join(srs.inbox_header_lines("English", 2)) + "\n")
         self.assertNotIn("/integrate", self.welcome())
         self.write("inbox.md", "Only an intro, no blocks.\n")
         self.assertIn("/integrate   text outside blocks in the inbox (lines: 1)", self.welcome())
@@ -4240,6 +4240,195 @@ class ReviewAgentsTest(unittest.TestCase):
         self.assertEqual(manifest["name"], srs.JUDGE_PLUGIN)
         for name in srs.JUDGES:
             self.assertTrue((ROOT / "agents" / f"{name}.md").is_file())
+
+
+class InboxHeaderTest(VaultCase):
+    """The header at the top of the inbox, and what /integrate asks about it."""
+
+    PT = "Escreva um bloco por assunto, separe-os em `# Tema` e `## Subtema`."
+    EN = "Write one block per subject, separated into `# Theme` and `## Subtheme`."
+
+    def config(self, vault=None):
+        return json.loads(((vault or self.vault) / ".srs/config.json").read_text())
+
+    def fresh(self, *args):
+        other = self.tmp / "fresh"
+        other.mkdir()
+        (other / "a.md").write_text("# A\n")
+        self.srs("init", "--git-init", *args, cwd=other)
+        return other
+
+    def header_section(self):
+        return self.srs("context", "integrate").stdout
+
+    def test_a_new_inbox_gets_the_header_in_the_vault_language(self):
+        english = self.fresh()
+        text = (english / "inbox.md").read_text()
+        self.assertEqual(text.splitlines()[0], self.EN)
+        self.assertEqual(text, "\n".join(srs.inbox_header_lines("English", 2)) + "\n\n")
+        self.assertEqual(self.config(english)["inbox_header"], "on")
+        (self.tmp / "fresh").rename(self.tmp / "fresh-en")
+        portuguese = self.fresh("--language", "português do Brasil")
+        self.assertEqual((portuguese / "inbox.md").read_text().splitlines()[0], self.PT)
+
+    def test_the_example_follows_the_heading_level(self):
+        other = self.fresh("--heading-level", "3")
+        self.assertEqual((other / "inbox.md").read_text().splitlines()[0],
+                         "Write one block per subject, separated into `# Theme` and `### Subtheme`.")
+        self.assertEqual(srs.inbox_header_lines("English", 1)[0],
+                         "Write one block per subject, each starting with a `# Title`.")
+
+    def test_an_existing_inbox_is_left_alone_and_unset(self):
+        self.assertEqual(self.config()["inbox_header"], "unset")
+        self.assertEqual((self.vault / "inbox.md").read_text(), "Intro.\n\n## First\none\n\n## Second\ntwo\n")
+
+    def test_the_header_is_not_text_outside_blocks(self):
+        for language in ("English", "português"):
+            for level in (1, 2, 3):
+                text = "\n".join(srs.inbox_header_lines(language, level)) + "\n\n" + "#" * level + " Block\nbody\n"
+                layout = srs.inbox_layout(text, level)
+                self.assertEqual(layout.stray, [], (language, level))
+                self.assertTrue(layout.header)
+                self.assertEqual([b.title for b in layout.blocks], ["Block"])
+        old = srs.LEGACY_INBOX_LINE + "\n\n## A\na\n"
+        self.assertEqual(srs.inbox_layout(old, 2).stray, [])
+        self.assertFalse(srs.inbox_layout(old, 2).header)
+        self.assertEqual(srs.inbox_layout("Intro.\n\n## A\na\n", 2).stray, [0])
+
+    def test_unset_asks_once_and_a_header_or_off_silences_it(self):
+        self.assertIn("## Inbox header: this inbox has none", self.header_section())
+        self.assertIn(self.EN, self.header_section())
+        self.assertIn("srs.py config --inbox-header off", self.header_section())
+        self.srs("config", "--inbox-header", "off")
+        self.assertNotIn("Inbox header", self.header_section().replace("Inbox header: off", ""))
+        self.srs("config", "--inbox-header", "on")
+        self.assertIn("## Inbox header: gone from the inbox", self.header_section())
+        self.write("inbox.md", "\n".join(srs.inbox_header_lines("English", 2)) + "\n\n## First\none\n")
+        self.assertNotIn("## Inbox header", self.header_section())
+
+    def test_unset_with_a_header_already_there_asks_nothing(self):
+        self.write("inbox.md", "\n".join(srs.inbox_header_lines("English", 2)) + "\n\n## First\none\n")
+        self.assertNotIn("## Inbox header", self.header_section())
+
+    def test_another_file_is_never_asked_about(self):
+        self.write("old.md", "## Old\ntext\n")
+        self.assertNotIn("## Inbox header", self.srs("context", "integrate", "old.md").stdout)
+
+    def test_the_command_needs_a_session_and_writes_after_the_frontmatter(self):
+        self.write("inbox.md", "---\nre:\n---\n" + srs.LEGACY_INBOX_LINE + "\n\n## First\none\n")
+        self.assertNotEqual(self.srs("inbox", "header", check=False).returncode, 0)
+        before = [b.id for b in srs.inbox_layout((self.vault / "inbox.md").read_text(), 2).blocks]
+        self.srs("begin", "integrate")
+        self.assertIn("Wrote the header", self.srs("inbox", "header").stdout)
+        text = (self.vault / "inbox.md").read_text()
+        self.assertTrue(text.startswith("---\nre:\n---\n\n" + self.EN + "\n"), text)
+        self.assertNotIn(srs.LEGACY_INBOX_LINE, text)
+        self.assertTrue(text.endswith("---\n\n## First\none\n"), text)
+        layout = srs.inbox_layout(text, 2)
+        self.assertEqual([b.id for b in layout.blocks], before)
+        self.assertEqual(layout.stray, [])
+        self.assertIn("already has the header", self.srs("inbox", "header").stdout)
+        self.write("other.md", "## Other\nx\n")
+        self.assertEqual(self.srs("inbox", "header", "--file", "other.md", check=False).returncode, 2)
+        (self.vault / "other.md").unlink()
+        self.srs("config", "--inbox-header", "on")
+        self.assertIn("Committed", self.srs("commit", "-m", "integrate: inbox header").stdout)
+        self.srs("end")
+        self.assertEqual(self.git("status", "--short"), "")
+
+    def test_the_header_keeps_the_line_endings_of_the_file(self):
+        (self.vault / "inbox.md").write_bytes(b"## First\r\none\r\n")
+        self.srs("begin", "integrate")
+        self.srs("inbox", "header")
+        data = (self.vault / "inbox.md").read_bytes()
+        self.assertNotIn(b"\n", data.replace(b"\r\n", b""))
+        self.srs("discard")
+        self.srs("end")
+
+    def test_config_records_the_answer_and_shows_it(self):
+        self.assertIn("Inbox header: not asked", self.srs("config").stdout)
+        out = self.srs("config", "--inbox-header", "off").stdout
+        self.assertIn("inbox_header unset -> off", out)
+        self.assertIn("Inbox header: off", out)
+        self.assertEqual(self.config()["inbox_header"], "off")
+        self.assertIn("Nothing changed", self.srs("config", "--inbox-header", "off").stdout)
+        self.assertEqual(self.srs("config", "--inbox-header", "maybe", check=False).returncode, 2)
+
+    def test_the_manual_shows_the_header_the_script_writes(self):
+        usage = (ROOT / "docs/usage.md").read_text()
+        self.assertIn("\n".join(srs.inbox_header_lines("English", 2)), usage)
+        self.assertFalse((ROOT / "templates/inbox.md").exists())
+
+
+class InboxNotesTest(VaultCase):
+    def guard_write(self, rel, text, tool="Write", **extra):
+        key = {"Write": "content", "Edit": "new_string"}.get(tool)
+        tool_input = {"file_path": str(self.vault / rel)}
+        if key:
+            tool_input[key] = text
+        tool_input.update(extra)
+        return self.guard({"tool_name": tool, "tool_input": tool_input, "cwd": str(self.vault)})
+
+    def test_the_block_list_counts_the_notes(self):
+        self.write("inbox.md", "## A\ntext {CLAUDE: index only}\nmore {CLAUDE: and keep it short}\n\n"
+                               "## B\nnone\n\n## C\n```\n{CLAUDE: in a fence}\n```\n")
+        out = self.srs("inbox", "list").stdout
+        self.assertRegex(out, r"A \(\d+ characters, 2 notes\)")
+        self.assertRegex(out, r"B \(\d+ characters\)")
+        self.assertRegex(out, r"C \(\d+ characters\)")
+        self.assertIn("2 notes", self.srs("context", "integrate").stdout)
+
+    def test_a_note_across_lines_counts_once(self):
+        self.write("inbox.md", "## A\n{CLAUDE: first line\nsecond line}\n")
+        self.assertIn("1 note)", self.srs("inbox", "list").stdout)
+
+    def test_the_guard_denies_a_page_with_a_note_in_or_out_of_a_session(self):
+        for opened in (False, True):
+            if opened:
+                self.srs("begin", "integrate")
+            self.assertEqual(self.guard_write("Math/Bayes.md", "text {CLAUDE: x}\n"), "deny")
+            self.assertEqual(self.guard_write("Math/Bayes.md", "a {CLAUDE, batch: x}", tool="Edit"), "deny")
+            self.assertEqual(self.guard_write("Math/New.md", "", tool="MultiEdit",
+                                              edits=[{"old_string": "a", "new_string": "ok"},
+                                                     {"old_string": "b", "new_string": "{ CLAUDE: x}"}]), "deny")
+            self.assertEqual(self.guard_write("index.md", "# Index\n{CLAUDE: x}\n"), "deny")
+        self.srs("end")
+
+    def test_the_guard_lets_the_inbox_and_the_rules_files_hold_notes(self):
+        note = "text {CLAUDE: x}\n"
+        self.assertIsNone(self.guard_write("inbox.md", note))
+        self.assertIsNone(self.guard_write("CLAUDE.md", note))
+        self.assertIsNone(self.guard_write("Math/AGENTS.md", note))
+        self.assertIsNone(self.guard_write(".obsidian/notes.md", note))
+        self.assertIsNone(self.guard_write("data.csv", note))
+        self.set_config(paths={"inbox": "Notes/in.md", "index": "index.md", "new_pages": "wiki",
+                               "folder_map": "folders.md"})
+        self.assertIsNone(self.guard_write("Notes/in.md", note))
+        self.assertEqual(self.guard_write("inbox.md", note), "deny")
+
+    def test_other_text_with_claude_in_it_passes(self):
+        self.assertIsNone(self.guard_write("Math/Bayes.md", "Claude Shannon {entropy}\n"))
+        self.assertIsNone(self.guard_write("Math/Bayes.md", "> [!claude]\n> a callout\n"))
+
+    def set_config(self, **values):
+        path = self.vault / ".srs/config.json"
+        config = json.loads(path.read_text(encoding="utf-8"))
+        config.update(values)
+        path.write_text(json.dumps(config), encoding="utf-8")
+
+    def test_the_prose_covers_notes_and_the_header(self):
+        rules = (ROOT / "rules.md").read_text()
+        self.assertIn("## Notes in the inbox", rules)
+        self.assertIn("A note never goes into a page", rules)
+        skill = (ROOT / "skills/integrate/SKILL.md").read_text()
+        for phrase in ("**Inbox header** section", "Notes: N of N", "A note never goes into the page",
+                       "srs.py plan save` in human mode too"):
+            self.assertIn(phrase, skill)
+        for name in ("README.md", "docs/usage.md", "docs/design.md"):
+            self.assertIn("{CLAUDE: ", (ROOT / name).read_text(), name)
+        self.assertIn("--inbox-header", (ROOT / "skills/config/SKILL.md").read_text())
+        for name in ("docs/usage.md", "docs/design.md"):
+            self.assertIn("inbox_header", (ROOT / name).read_text(), name)
 
 
 if __name__ == "__main__":

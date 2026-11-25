@@ -18,7 +18,7 @@ Recall is a set of commands, agents and hooks around a language model, plus one 
 
 The line isn't left to the prompts alone:
 
-- a hook runs before every edit the model makes, denies the ones under `.srs/`, where the schedule, the log and the seals live, and records each note the model writes, so the script knows exactly what a session changed;
+- a hook runs before every edit the model makes, denies the ones under `.srs/`, where the schedule, the log and the seals live, and the ones that would copy a `{CLAUDE: ...}` note of the inbox into a page, and records each note the model writes, so the script knows exactly what a session changed;
 - the agents that index, audit and judge pages get read-only tools (Read, Glob and Grep);
 - nothing is committed without your approval of its diff, except for corrections whose exact text you approved in the plan of `/integrate` and typos you approved in `/quiz`, and in agent review (below), where the script's checks and the judges stand in for you after you approve the plan.
 
@@ -45,6 +45,8 @@ As you study, you add blocks to the end of `inbox.md`, each under a `##` heading
 The eigenvalues of a triangular matrix are its diagonal entries,
 because det(A − λI) is the product of the (a_ii − λ).
 ```
+
+A new inbox starts with a short header that says how to write blocks. It also says how to leave a note for `/integrate` inside a block, as in `{CLAUDE: keep this apart from the block above}`. The note shows up in the plan, is answered there, and never goes into a page. The header is in Portuguese when the vault's `language` is, and in English otherwise. Delete it when you don't need it: `/integrate` asks once, in a vault that never decided, and again if a header that was there is gone, and stops asking when you say no.
 
 ### Integrating
 
@@ -174,7 +176,7 @@ Choose the **project** scope, so Recall's commands and hooks load only in this v
 | `/promote [page or topic]` | With the quiz on | Adds concepts from notes you already had to the quiz |
 | `/maintenance` | Now and then, whenever the wiki changed | Indexes what is new in your pages, asks which of it goes into the quiz, checks the pages against the index, seals the ones with nothing pending and reports the rest |
 | `/setup` | Once | Configures the vault |
-| `/config [change]` | When your pace changes | Shows or changes the quiz, its daily pace and who reviews `/integrate` |
+| `/config [change]` | When your pace changes | Shows or changes the quiz, its daily pace, who reviews `/integrate` and the inbox header |
 
 If another plugin uses the same name, type `/recall:quiz` and so on.
 

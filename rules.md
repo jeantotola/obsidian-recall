@@ -38,6 +38,14 @@ Before committing a correction, run `srs.py reseal "<page>" ...` on the pages it
 
 Show all the candidates first, in one numbered list. Then suggest, by number and with a half-line reason each, which go to review and which stay in the index only. Suggest review for concepts that are core to what the user is studying now, foundations for other concepts, subtle distinctions, or things a block got wrong. Suggest index only for author or book details, names and dates, things one looks up in seconds, and peripheral facts. If the queue line says the queue is long, suggest fewer and say why. The user answers "ok" or adjusts, for example "ok, without 3 and with 5".
 
+## Notes in the inbox
+
+A `{CLAUDE: ...}` inside an inbox block is a note from the user to /integrate: an instruction or a question, in free text, about the passage where it sits. The block list counts the notes of each block.
+
+- A note is a request, not an approval: the plan still needs the user's ok. Point out where a note conflicts with the vault, and ask in the plan when it is ambiguous.
+- A note never goes into a page, not even quoted: write the passage without it. A hook denies the write otherwise. Don't delete it from the inbox during the session, because that would change the id of its block; it leaves with the block.
+- A note that asks for a correction of the user's text authorizes only the exact change the plan shows, as the Errors section says.
+
 ## Running srs.py
 
 - Run it exactly as the command shows it, `python3 <plugin path>/scripts/srs.py <command> ...`, on its own: no `cd`, pipes, redirections or `&&`.

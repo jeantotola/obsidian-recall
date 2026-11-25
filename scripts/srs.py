@@ -30,7 +30,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-VERSION = "0.28.0"
+VERSION = "0.29.0"
 SRS_DIR = ".srs"
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 TEMPLATES = PLUGIN_ROOT / "templates"
@@ -101,6 +101,9 @@ DEFAULT_CONFIG = {
     "paths": {"inbox": "inbox.md", "index": "index.md", "new_pages": "wiki", "folder_map": "folders.md"},
     "new_page_placement": "folders",
     "inbox_heading_level": 2,
+    # The short text at the top of the inbox. unset: /integrate asks once whether to add it; on: it was
+    # added, and /integrate asks again if it goes missing; off: never asked.
+    "inbox_header": "unset",
     # The daily quiz. Off: no /quiz or /promote, and /integrate and /maintenance queue nothing; the schedule is
     # kept as it is.
     "quiz": True,
@@ -1263,6 +1266,63 @@ def describe_answer(name: str, before: str, rec: dict, today: dt.date, leech_at:
 # ---------------------------------------------------------------------------
 
 
+# The header at the top of an inbox: how a block is written and how a note is left. {h} is the heading of
+# a block. It is in Portuguese when the vault's language is, and in English otherwise.
+INBOX_HEADER = {
+    "en": ["Write one block per subject, separated into `# Theme` and `{h} Subtheme`.",
+           "",
+           "Leave a note for /integrate inside a block: {CLAUDE: your note}.",
+           "Example: {CLAUDE: keep this apart from the block above}.",
+           "The note never goes into the page.",
+           "",
+           "---"],
+    "pt": ["Escreva um bloco por assunto, separe-os em `# Tema` e `{h} Subtema`.",
+           "",
+           "Deixe uma nota para o /integrate dentro de um bloco: {CLAUDE: sua nota}.",
+           "Exemplo: {CLAUDE: não junte este bloco com o anterior}.",
+           "A nota nunca vai para a página.",
+           "",
+           "---"],
+}
+# With blocks at level 1 there is no theme above them.
+INBOX_HEADER_FIRST_FLAT = {"en": "Write one block per subject, each starting with a `{h} Title`.",
+                           "pt": "Escreva um bloco por assunto, cada um começando com um título `{h} Título`."}
+# The line /setup wrote in an inbox before the header existed.
+LEGACY_INBOX_LINE = ("Write here as you study, one block per subject, each starting with a heading. Put new "
+                     "blocks at the end, and run /integrate when you finish a study session.")
+
+
+def language_code(language) -> str:
+    """The language setting is free text: Portuguese when it names it ("Brazilian Portuguese", "pt-BR"), else English."""
+    value = str(language or "").strip().casefold()
+    return "pt" if "portugu" in value or value.startswith("pt") else "en"
+
+
+def inbox_header_lines(language, level: int) -> list:
+    code = language_code(language)
+    lines = list(INBOX_HEADER[code])
+    if level == 1:
+        lines[0] = INBOX_HEADER_FIRST_FLAT[code]
+    return [line.replace("{h}", "#" * level) for line in lines]
+
+
+# Every line the header has ever had, at every level and in both languages: none of them is text of the user's.
+INBOX_HEADER_FIRSTS = {inbox_header_lines(code, n)[0] for code in INBOX_HEADER for n in range(1, 7)}
+INBOX_OWN_LINES = ({line for code in INBOX_HEADER for n in range(1, 7) for line in inbox_header_lines(code, n)
+                    if line.strip()} | {LEGACY_INBOX_LINE})
+
+# A note the user leaves for /integrate inside an inbox block.
+NOTE_RE = re.compile(r"\{\s*CLAUDE\b[^}]*\}")
+
+
+def count_notes(text: str) -> int:
+    fence, kept = FenceTracker(), []
+    for line in text.splitlines():
+        if not fence.step(line):
+            kept.append(line)
+    return len(NOTE_RE.findall("\n".join(kept)))
+
+
 @dataclass
 class Block:
     id: str
@@ -1279,6 +1339,8 @@ class InboxLayout:
     lines: list
     titles: list  # headings above the block level with no text of their own: (line index, text, has blocks under it)
     stray: list  # line indexes with text before any heading
+    header: bool = False  # the inbox starts with Recall's header
+    legacy: list = field(default_factory=list)  # line indexes of the line /setup used to write
 
 
 def frontmatter_end(lines: list) -> int:
@@ -1326,11 +1388,28 @@ def inbox_layout(text: str, level: int) -> InboxLayout:
         blocks.append(Block(id=block_id, title=title, start=start, end=end, text=body,
                             under=parents[-1][1] if parents else ""))
         parents.append((depth, heading, None))
-    # The line /setup writes in a new inbox is no text of the user's.
-    own = {t.strip() for t in read_text(TEMPLATES / "inbox.md").splitlines()}
+    # The header and the line /setup used to write are no text of the user's.
     before = range(first, marks[0][0] if marks else len(lines))
-    stray = [i for i in before if lines[i].strip() and lines[i].lstrip("\ufeff").strip() not in own]
-    return InboxLayout(blocks, lines, [tuple(t) for t in titles], stray)
+    stray = [i for i in before if lines[i].strip() and lines[i].lstrip("\ufeff").strip() not in INBOX_OWN_LINES]
+    header = any(lines[i].lstrip("\ufeff").strip() in INBOX_HEADER_FIRSTS for i in before)
+    legacy = [i for i in before if lines[i].strip() == LEGACY_INBOX_LINE]
+    return InboxLayout(blocks, lines, [tuple(t) for t in titles], stray, header, legacy)
+
+
+def with_inbox_header(text: str, language, level: int) -> str:
+    """The inbox text with the header at its top, after the frontmatter, and without the old /setup line."""
+    layout = inbox_layout(text, level)
+    nl = "\r\n" if "\r\n" in text else "\n"
+    first = frontmatter_end(layout.lines)
+    kept = [line for i, line in enumerate(layout.lines) if i not in set(layout.legacy)]
+    rest = kept[first:]
+    while rest and not rest[0].strip():
+        rest.pop(0)
+    front = "".join(kept[:first])
+    if front and not front.endswith("\n"):
+        front += nl
+    head = nl.join(inbox_header_lines(language, level)) + nl
+    return front + (nl if front else "") + head + nl + "".join(rest)
 
 
 def parse_blocks(text: str, level: int):
@@ -1340,7 +1419,9 @@ def parse_blocks(text: str, level: int):
 
 def block_line(b: Block) -> str:
     under = f', under "{b.under}"' if b.under else ""
-    return f"  [{b.id}] {b.title} ({len(b.text)} characters{under})"
+    notes = count_notes(b.text)
+    note = f", {plural(notes, 'note')}" if notes else ""
+    return f"  [{b.id}] {b.title} ({len(b.text)} characters{under}{note})"
 
 
 def layout_notes(layout: InboxLayout) -> list:
@@ -1893,6 +1974,9 @@ def cmd_init(args):
             raise SrsError("--heading-level must be between 1 and 6.")
         config["inbox_heading_level"] = args.heading_level
     config["exclude"] = [p for p in (args.exclude or []) if p.strip()]
+    new_inbox = not (root / config["paths"]["inbox"]).exists()
+    if new_inbox:
+        config["inbox_header"] = "on"  # an inbox that already exists is left alone: /integrate asks about the header
 
     srs = root / SRS_DIR
     write_json(srs / "config.json", config)
@@ -1903,12 +1987,15 @@ def cmd_init(args):
         csv.writer(fh).writerow(LOG_HEADER)
     paths = [f"{SRS_DIR}/config.json", f"{SRS_DIR}/quiz-rules.md", f"{SRS_DIR}/state.json",
              f"{SRS_DIR}/verified.json", f"{SRS_DIR}/log.csv"]
-    for key, template in (("inbox", "inbox.md"), ("index", "index.md")):
+    for key, template in (("inbox", None), ("index", "index.md")):
         rel = config["paths"][key]
         target = root / rel
         if not target.exists():
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(str(TEMPLATES / template), str(target))
+            if template is None:
+                write_text(target, with_inbox_header("", config["language"], config["inbox_heading_level"]))
+            else:
+                shutil.copyfile(str(TEMPLATES / template), str(target))
             paths.append(rel)
             print(f"Created {rel}.")
     if ensure_gitignore(root):
@@ -2688,6 +2775,40 @@ def review_mode_line(v: Vault) -> str:
     return f"/integrate review: {mode} ({what})."
 
 
+def inbox_header_state(v: Vault) -> str:
+    state = v.config.get("inbox_header")
+    return state if state in ("on", "off") else "unset"
+
+
+def inbox_header_line(v: Vault) -> str:
+    state = inbox_header_state(v)
+    what = {"on": "the inbox starts with a short text on how to write blocks and notes",
+            "off": "no header, and /integrate doesn't ask about it",
+            "unset": "not decided yet: /integrate asks once"}[state]
+    return f"Inbox header: {state if state != 'unset' else 'not asked'} ({what})."
+
+
+def inbox_header_prompt(v: Vault, rel: str, layout) -> list:
+    """What /integrate asks about the header: once when the vault never decided, and again when a header
+    that was there is gone. 'off' ends the questions."""
+    state = inbox_header_state(v)
+    if rel != v.inbox_rel or layout.header or state == "off":
+        return []
+    shown = ["```text"] + inbox_header_lines(v.config["language"], v.config["inbox_heading_level"]) + ["```"]
+    if state == "on":
+        title = "## Inbox header: gone from the inbox"
+        ask = ("The inbox had Recall's header and it isn't there now, most likely deleted on purpose. Right after "
+               "step 1, ask once, in the user's language and in one line, whether to put it back. ")
+    else:
+        title = "## Inbox header: this inbox has none"
+        ask = ("The inbox has no header, the short text at its top on how to write blocks and notes. Right after "
+               "step 1, ask once, in the user's language and in one or two lines, whether to add it, and show it: ")
+    return ["", title, ask + "The text is below, in the vault's language.", *shown,
+            "Yes: `srs.py config --inbox-header on`, then `srs.py inbox header`, then "
+            "`srs.py commit -m \"integrate: inbox header\"`. No: `srs.py config --inbox-header off`, which ends "
+            "the question for good. Don't ask it again in this run."]
+
+
 def quiz_line(v: Vault) -> str:
     if v.quiz:
         return "Quiz: on (/quiz asks the concepts due each day)."
@@ -2703,7 +2824,7 @@ def settings_lines(v: Vault) -> list:
     lines = [quiz_line(v)]
     if v.quiz:
         lines += pace_lines(v) + [retry_line(v)]
-    return lines + [review_mode_line(v)]
+    return lines + [review_mode_line(v), inbox_header_line(v)]
 
 
 def integrate_commits_since(v: Vault, sha) -> int:
@@ -2783,12 +2904,17 @@ def cmd_config(args):
                      if {"enabled": enabled, "interval": interval}[k] != value}
     mode, current = args.integrate_review, v.config.get("integrate_review")
     prompt = v.config["integrate_review_prompt"]
+    header_wanted = args.inbox_header
+    header_before = inbox_header_state(v)
+    header_change = header_wanted is not None and header_wanted != header_before
     quiz_wanted = None if args.quiz is None else args.quiz == "on"
     quiz_change = quiz_wanted is not None and v.config.get("quiz") is not quiz_wanted
     summary = [f"quiz {args.quiz}"] if quiz_change else []
     summary += [f"{k} {v.sched[k]} -> {value}" for k, value in changes.items()]
     summary += [f"retry {'on' if value else 'off'}" if k == "enabled" else f"retry interval {interval} -> {value}"
                 for k, value in retry_changes.items()]
+    if header_change:
+        summary.append(f"inbox_header {header_before} -> {header_wanted}")
     review_raw = {}  # what goes into the file for the integrate review settings
     if args.remind_later:
         if (mode or current) != "human":
@@ -2804,7 +2930,8 @@ def cmd_config(args):
         if not args.remind_later:
             review_raw["prompt"] = {"asked": v.today.isoformat(), "asked_head": head_sha(v),
                                     "wait_days": int(prompt["first_days"])}
-    if (wanted or retry_wanted or mode is not None or args.remind_later or quiz_wanted is not None) and not summary:
+    if (wanted or retry_wanted or mode is not None or args.remind_later or quiz_wanted is not None
+            or header_wanted is not None) and not summary:
         print("Nothing changed.")
     if summary:
         repo = require_repo(v)
@@ -2813,6 +2940,9 @@ def cmd_config(args):
         if quiz_change:
             raw["quiz"] = quiz_wanted
             v.config["quiz"] = quiz_wanted
+        if header_change:
+            raw["inbox_header"] = header_wanted
+            v.config["inbox_header"] = header_wanted
         for key, value in changes.items():
             raw.setdefault("scheduling", {})[key] = value
         if retry_changes:
@@ -3118,6 +3248,17 @@ def cmd_inbox(args):
         for line in layout_notes(layout):
             print(line)
         return
+    if args.action == "header":
+        require_session(v)
+        if rel != v.inbox_rel:
+            raise SrsError("The header goes only in the inbox.", 2)
+        if layout.header:
+            print(f"{rel} already has the header.")
+            return
+        write_text(path, with_inbox_header(text, v.config["language"], level))
+        touch(v, rel)
+        print(f"Wrote the header at the top of {rel}.")
+        return
     if args.action == "remove-title":
         wanted = [t.strip() for t in args.ids]
         if len(wanted) != 1:
@@ -3278,9 +3419,7 @@ MAINTENANCE_DAYS = 14  # or with any such page, this long after the last seal
 
 
 def welcome_strings(language) -> dict:
-    """The language setting is free text: Portuguese when it names it ("Brazilian Portuguese", "pt-BR"), else English."""
-    value = str(language or "").strip().casefold()
-    return WELCOME_STRINGS["pt" if "portugu" in value or value.startswith("pt") else "en"]
+    return WELCOME_STRINGS[language_code(language)]
 
 
 def welcome_count(words: dict, n: int, word: str) -> str:
@@ -4284,6 +4423,7 @@ def context_integrate(v: Vault, extra: list) -> list:
         if not blocks:
             out.append(f"  (no blocks: a block starts with a heading, '{'#' * v.config['inbox_heading_level']} Title')")
         out += layout_notes(layout)
+        out += inbox_header_prompt(v, rel, layout)
         waiting = {b: e for b, e in live_supervision(v).items() if (e.get("source") or v.inbox_rel) == rel}
         if waiting:
             out.append("")
@@ -4682,6 +4822,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--quiz", choices=["on", "off"], help="turn the daily quiz on or off (the schedule is kept)")
     p.add_argument("--new-per-day", type=int, help="new concepts per day (0 pauses them)")
     p.add_argument("--daily-limit", type=int, help="concepts per day, reviews and new together")
+    p.add_argument("--inbox-header", choices=["on", "off"],
+                   help="whether the inbox starts with a short header on how to write blocks and notes")
     p.add_argument("--integrate-review", choices=REVIEW_MODES, help="who reviews /integrate: you (human) or judge agents (agent)")
     p.add_argument("--remind-later", action="store_true", help="postpone the reminder to try the agent review")
     p.add_argument("--retry", choices=["on", "off"], help="a second try, without hints, after a wrong answer to an open question")
@@ -4708,8 +4850,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("audit-batch", help="the batch to audit for the pages given (default: the unsealed ones)")
     p.add_argument("pages", nargs="*")
     p.set_defaults(func=cmd_audit_batch)
-    p = sub.add_parser("inbox", help="list, show or remove inbox blocks, or remove a heading left empty")
-    p.add_argument("action", choices=["list", "show", "remove", "remove-title"])
+    p = sub.add_parser("inbox", help="list, show or remove inbox blocks, remove a heading left empty, or write the header")
+    p.add_argument("action", choices=["list", "show", "remove", "remove-title", "header"])
     p.add_argument("ids", nargs="*")
     p.add_argument("--file", help="another file with blocks, instead of the inbox")
     p.set_defaults(func=cmd_inbox)

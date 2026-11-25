@@ -8,6 +8,9 @@
   the review, so it works the same in every permission mode.
 - Lets Bash run this plugin's own srs.py without a prompt, when the command is
   exactly that script and nothing else.
+- Denies a page that would contain a `{CLAUDE: ...}` note: those notes are the
+  user's instructions in the inbox and never go into a page. Only the inbox and
+  the files of rules (CLAUDE.md, CLAUDE.local.md, AGENTS.md) may hold the text.
 
 Anything else gets no opinion and follows the normal permission flow. Outside a
 vault where Recall is set up, the guard does nothing.
@@ -17,12 +20,15 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import sys
 from pathlib import Path
 
 SRS_DIR = ".srs"
 OPERATORS = set("();<>|&")
+NOTE_RE = re.compile(r"\{\s*CLAUDE\b")
+RULE_FILES = {"claude.md", "claude.local.md", "agents.md"}
 
 
 def decide(decision: str, reason: str) -> None:
@@ -59,6 +65,34 @@ def is_own_script(command: str, plugin_root: str) -> bool:
         return False
     expected = os.path.realpath(os.path.join(plugin_root, "scripts", "srs.py"))
     return os.path.realpath(tokens[1]) == expected
+
+
+def inbox_rel(vault: Path) -> str:
+    try:
+        config = json.loads((vault / SRS_DIR / "config.json").read_text(encoding="utf-8"))
+        value = (config.get("paths") or {}).get("inbox") or "inbox.md"
+    except (OSError, ValueError, AttributeError):
+        value = "inbox.md"
+    value = str(value).replace("\\", "/")
+    while value.startswith("./"):
+        value = value[2:]
+    return value.casefold()
+
+
+def written_texts(tool_input: dict) -> list:
+    texts = [tool_input.get("content"), tool_input.get("new_string"), tool_input.get("new_source")]
+    texts += [e.get("new_string") for e in tool_input.get("edits") or [] if isinstance(e, dict)]
+    return [t for t in texts if isinstance(t, str)]
+
+
+def carries_note(vault: Path, rel: str, tool_input: dict) -> bool:
+    """True when the write puts a `{CLAUDE: ...}` note into a page of the vault."""
+    parts = rel.split("/")
+    if not rel.lower().endswith(".md") or any(p.startswith(".") for p in parts):
+        return False
+    if rel.casefold() == inbox_rel(vault) or parts[-1].lower() in RULE_FILES:
+        return False
+    return any(NOTE_RE.search(t) for t in written_texts(tool_input))
 
 
 def record_touched(session_file: Path, rel: str) -> None:
@@ -145,6 +179,10 @@ def main() -> int:
     parts = rel.split("/")
     if parts[0] == SRS_DIR:
         decide("deny", "Recall: files in .srs/ are written only by srs.py. Use the srs.py commands instead.")
+        return 0
+    if carries_note(vault, rel, tool_input):
+        decide("deny", "Recall: the text has a {CLAUDE: ...} note from the inbox. A note never goes into a page: "
+                       "write the page without it.")
         return 0
     session_file = vault / SRS_DIR / "session.json"
     if session_file.exists() and rel.lower().endswith(".md") and not any(p.startswith(".") for p in parts):
