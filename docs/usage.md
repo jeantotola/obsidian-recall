@@ -56,7 +56,7 @@ Recall: today 22 questions: 15 reviews, 7 new concepts
   /maintenance 6 pages changed since the last check (12 days ago)
 ```
 
-It shows only what matters: what is left if you stopped mid-quiz, the score once the quiz is done, the next quiz when there is nothing to ask, and an interrupted session as the first line. An empty inbox drops the `/integrate` line. Questions you postponed are counted in the `/maintenance` line, but don't bring it up. That line appears only when the command is worth running: with 5 or more pages changed since their last check or not in the index yet, with any such page 14 days after the last check, or with an idea you keep missing or a leech. A changed page isn't a problem, only a reason to check. Pages not in the index are counted apart, as in `2 pages not in the index`. The message is in Portuguese when `language` contains "portugu" or starts with "pt", and in English otherwise. With the quiz off, it shows only the `/integrate` and `/maintenance` lines, and nothing when neither applies. It only reads the vault's files: it doesn't run git or write anything. Outside a vault with Recall set up, it prints nothing.
+It shows only what matters: what is left if you stopped mid-quiz, the score once the quiz is done, the next quiz when there is nothing to ask, and an interrupted session as the first line. An empty inbox drops the `/integrate` line. Questions you postponed are counted in the `/maintenance` line, but don't bring it up. That line appears only when the command is worth running: with 5 or more pages changed since their last check or not in the index yet, with any such page 14 days after the last check, with any such page when a page has a `{CLAUDE: ...}` note for `/maintenance`, or with an idea you keep missing or a leech. A changed page isn't a problem, only a reason to check. Pages not in the index are counted apart, as in `2 pages not in the index`. The message is in Portuguese when `language` contains "portugu" or starts with "pt", and in English otherwise. With the quiz off, it shows only the `/integrate` and `/maintenance` lines, and nothing when neither applies. It only reads the vault's files: it doesn't run git or write anything. Outside a vault with Recall set up, it prints nothing.
 
 ### Inbox format
 
@@ -106,6 +106,16 @@ A `{CLAUDE: ...}` inside a block is an instruction or a question for `/integrate
 - Don't delete it from the inbox during the run: that would change the id of its block. It leaves with the block, in the same commit.
 - The block list of `/integrate` and `srs.py inbox list` count the notes of each block.
 
+### Notes for /maintenance
+
+A `{CLAUDE: ...}` can also go into a page, written in Obsidian, for the next `/maintenance`: something to keep in mind about the passage where it sits. For example, on a page whose two topics will one day need pages of their own, `{CLAUDE: when these two parts leave, keep the story of the page whole}`.
+
+- Writing it changes the page, so the welcome message suggests `/maintenance` from that one page on, as one more page changed since the last check.
+- There is no extra step and no extra approval. The model reads the page in full and takes the note into account in what the report proposes for that page, saying how. When nothing in the report touches the page, one line (N1, N2…) says what the note asks for and suggests removing it, keeping it for a later run, or turning it into an invisible `%% ... %%` comment next to the passage. You answer it with the rest of the report.
+- The note leaves the page in the fix it shaped, or as you answered; without an answer it stays until the next `/maintenance`. A page with a note isn't sealed: `srs.py verify` refuses it until the note is gone.
+- `/integrate` takes the note into account when a block goes into that page, says so in the plan, and leaves the note where it is. `/promote` waits for `/maintenance` on that page, and `/quiz` never asks about a note.
+- The guard lets a write keep a note the page already has, and still denies one the page doesn't have, such as a note copied from the inbox.
+
 ### What gets committed
 
 | Commit message | Made by |
@@ -143,7 +153,7 @@ Answer `ok`, ask for a change, `skip` (the audit runs with the index as it was) 
 
 ### Fixing what /maintenance finds
 
-The report gives each item an ID (Q for questions you postponed before, E for errors, F for failures, D for the script's checks, T, M and R for the auditor's notes, G for gaps, L for leeches), so you can answer "F1 ok, E2 no, M1 later". The auditor's findings are leads: the model opens the page, and looks in the index's git history for concepts you removed, before showing you anything. What you answer decides the seal:
+The report gives each item an ID (Q for questions you postponed before, E for errors, F for failures, D for the script's checks, T, M and R for the auditor's notes, N for your [notes in pages](#notes-for-maintenance), G for gaps, L for leeches), so you can answer "F1 ok, E2 no, M1 later". The auditor's findings are leads: the model opens the page, and looks in the index's git history for concepts you removed, before showing you anything. What you answer decides the seal:
 
 - **Corrected:** the page is sealed without another audit.
 - **No**, to a failure: the page is sealed as it is, so the same question doesn't come back while the page stays as it is.
@@ -156,7 +166,7 @@ Each batch of 20 pages is decided before the next one is audited, and you choose
 | `srs.py show "<Concept>" ...` | Where the concept is in the index, or when it was removed from it, and whether it is in the quiz, with its interval, lapses and gap: what removing it would lose |
 | `srs.py merge "<duplicate>" "<owner>"` | Folds a scheduled duplicate into the concept that keeps it: an owner outside the quiz takes over the history, log included; a scheduled owner keeps its own |
 | `srs.py remove "<Concept>" ...` | Takes concepts out of the quiz, all or none; they stay in the index |
-| `srs.py verify "<page>" ...` | Seals pages with nothing pending |
+| `srs.py verify "<page>" ...` | Seals pages with nothing pending; refuses a page that still has a `{CLAUDE: ...}` note |
 | `srs.py reseal "<page>" ...` | Keeps the seal of pages the session only corrected; run before the commit |
 | `srs.py open "<page>" "<question>"` | Keeps a question you postponed; `--close` drops it |
 | `srs.py flag "<page>" --misplaced "<Concept>" --to "<where it belongs>"` | Flags a concept defined on the wrong page |

@@ -46,6 +46,15 @@ A `{CLAUDE: ...}` inside an inbox block is a note from the user to /integrate: a
 - A note never goes into a page, not even quoted: write the passage without it. A hook denies the write otherwise. Don't delete it from the inbox during the session, because that would change the id of its block; it leaves with the block.
 - A note that asks for a correction of the user's text authorizes only the exact change the plan shows, as the Errors section says.
 
+## Notes in pages
+
+A `{CLAUDE: ...}` the user writes in a page is a note for the next /maintenance, about the passage where it sits: what to keep in mind there, such as keeping the page's story whole when a part of it moves to a page of its own. It adds no step and no approval of its own: the user sees its effect in what the command already proposes.
+
+- /maintenance reads every page with a note in full, and takes the note into account in the items of its report that touch that page, saying in the item how it followed the note. When no item touches it, one line of the report says what the note asks for and suggests removing it, keeping it for a later run, or turning it into a `%% ... %%` comment next to the passage, with its exact text. The user answers it with the rest of the report.
+- The note leaves the page in the fix it shaped, or as the user answered; without an answer it stays until the next /maintenance. A page is sealed only once its notes are gone: `srs.py verify` refuses it before.
+- /integrate takes the note of a page it writes into account in the plan, saying in the item how it followed it, and leaves the note where it is: it is for /maintenance. /promote leaves the candidates of a page with a note out until then. The quiz never asks about a note's text.
+- Never add a note to a page yourself. The hook denies a write with a new one, and lets a write keep the ones the page already has.
+
 ## Running srs.py
 
 - Run it exactly as the command shows it, `python3 <plugin path>/scripts/srs.py <command> ...`, on its own: no `cd`, pipes, redirections or `&&`.

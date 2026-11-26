@@ -1460,6 +1460,33 @@ class ChecksTest(VaultCase):
         self.assertIn("Absolute path: `", batch)
         self.assertIn("/Bayes.md`", batch)
 
+    def test_maintenance_lists_every_note_in_pages_and_audits_their_pages_first(self):
+        self.index("## [[Eigendecomposition]]\n- Eigenvectors\n\n## [[Bayes]]\n- Bayes' theorem\n")
+        self.write("Math/Bayes.md", "# Bayes\nP(A|B)\n\n{CLAUDE: plan the split\nwithout breaking the story}\n"
+                                    "```\n{CLAUDE: in a fence}\n```\n")
+        self.write("Loose.md", "text {CLAUDE: not indexed yet}\n")
+        out = self.srs("context", "maintenance").stdout
+        notes = out.split("## Notes in pages (2 notes in 2 pages)")[1].split("##")[0]
+        self.assertIn("Math/Bayes.md:4: {CLAUDE: plan the split without breaking the story}", notes)
+        self.assertIn("Loose.md:1: {CLAUDE: not indexed yet}", notes)
+        self.assertNotIn("in a fence", notes)
+        self.assertNotIn("inbox.md", notes)
+        batch = out.split("## Batch to audit")[1]
+        self.assertLess(batch.index("Math/Bayes.md"), batch.index("Math/Eigendecomposition.md"))
+
+    def test_no_notes_no_section(self):
+        self.index("## [[Bayes]]\n- Bayes' theorem\n")
+        self.assertNotIn("## Notes in pages (", self.srs("context", "maintenance").stdout)
+
+    def test_verify_refuses_a_page_that_still_has_a_note(self):
+        self.index("## [[Bayes]]\n- Bayes' theorem\n")
+        self.write("Math/Bayes.md", "# Bayes\ntext {CLAUDE: x}\n")
+        proc = self.srs("verify", "Bayes", check=False)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("still has a {CLAUDE: ...} note", proc.stdout)
+        self.write("Math/Bayes.md", "# Bayes\ntext\n")
+        self.srs("verify", "Bayes")
+
 
 class IndexBatchTest(VaultCase):
     """/maintenance brings the index up to date before the audit: index-batch and index-skip."""
@@ -2805,6 +2832,12 @@ class WelcomeTest(VaultCase):
                          "  /maintenance 1 page changed since the last check (14 days ago)")
         self.set_config(language="pt")
         self.assertIn("1 página mudou desde", self.maintenance_line(today="2026-01-15"))
+
+    def test_one_page_with_a_note_suggests_it_right_away(self):
+        names = self.seal_pages(2)
+        self.write(f"Pages/{names[0]}.md", f"# {names[0]}\ntext {{CLAUDE: keep these two together}}\n")
+        self.assertEqual(self.maintenance_line(today="2026-01-02"),
+                         "  /maintenance 1 page changed since the last check (1 day ago)")
 
     def test_two_weeks_without_changes_ask_for_nothing(self):
         self.seal_pages(2)
@@ -4418,6 +4451,17 @@ class InboxNotesTest(VaultCase):
                                "folder_map": "folders.md"})
         self.assertIsNone(self.guard_write("Notes/in.md", note))
         self.assertEqual(self.guard_write("inbox.md", note), "deny")
+
+    def test_the_guard_keeps_a_note_the_page_already_has(self):
+        self.write("Math/Bayes.md", "# Bayes\nkeep {CLAUDE: plan the split}\n")
+        self.srs("begin", "integrate")
+        self.assertEqual(self.guard_write("Math/Bayes.md", "new text\nkeep {CLAUDE:  plan the split}", tool="Edit"),
+                         "allow")
+        self.assertEqual(self.guard_write("Math/Bayes.md", "# Bayes\nkeep\n"), "allow")
+        self.assertEqual(self.guard_write("Math/Bayes.md", "keep {CLAUDE: plan the split} {CLAUDE: another}",
+                                          tool="Edit"), "deny")
+        self.assertEqual(self.guard_write("Math/Bayes.md", "keep {CLAUDE: plan the", tool="Edit"), "deny")
+        self.srs("end")
 
     def test_other_text_with_claude_in_it_passes(self):
         self.assertIsNone(self.guard_write("Math/Bayes.md", "Claude Shannon {entropy}\n"))

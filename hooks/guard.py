@@ -8,9 +8,10 @@
   the review, so it works the same in every permission mode.
 - Lets Bash run this plugin's own srs.py without a prompt, when the command is
   exactly that script and nothing else.
-- Denies a page that would contain a `{CLAUDE: ...}` note: those notes are the
-  user's instructions in the inbox and never go into a page. Only the inbox and
-  the files of rules (CLAUDE.md, CLAUDE.local.md, AGENTS.md) may hold the text.
+- Denies a page that would get a new `{CLAUDE: ...}` note: the notes of the inbox
+  never go into a page. A note the user wrote in the page itself is for
+  /maintenance, so a write may keep it. Only the inbox and the files of rules
+  (CLAUDE.md, CLAUDE.local.md, AGENTS.md) may get new ones.
 
 Anything else gets no opinion and follows the normal permission flow. Outside a
 vault where Recall is set up, the guard does nothing.
@@ -28,6 +29,7 @@ from pathlib import Path
 SRS_DIR = ".srs"
 OPERATORS = set("();<>|&")
 NOTE_RE = re.compile(r"\{\s*CLAUDE\b")
+FULL_NOTE_RE = re.compile(r"\{\s*CLAUDE\b[^}]*\}")
 RULE_FILES = {"claude.md", "claude.local.md", "agents.md"}
 
 
@@ -86,13 +88,24 @@ def written_texts(tool_input: dict) -> list:
 
 
 def carries_note(vault: Path, rel: str, tool_input: dict) -> bool:
-    """True when the write puts a `{CLAUDE: ...}` note into a page of the vault."""
+    """True when the write puts a `{CLAUDE: ...}` note into a page of the vault that the page
+    doesn't already have."""
     parts = rel.split("/")
     if not rel.lower().endswith(".md") or any(p.startswith(".") for p in parts):
         return False
     if rel.casefold() == inbox_rel(vault) or parts[-1].lower() in RULE_FILES:
         return False
-    return any(NOTE_RE.search(t) for t in written_texts(tool_input))
+    try:
+        current = (vault / rel).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        current = ""
+    kept = {" ".join(m.group(0).split()) for m in FULL_NOTE_RE.finditer(current)}
+    for text in written_texts(tool_input):
+        for start in NOTE_RE.finditer(text):
+            full = FULL_NOTE_RE.match(text, start.start())
+            if not full or " ".join(full.group(0).split()) not in kept:
+                return True
+    return False
 
 
 def record_touched(session_file: Path, rel: str) -> None:
@@ -181,8 +194,8 @@ def main() -> int:
         decide("deny", "Recall: files in .srs/ are written only by srs.py. Use the srs.py commands instead.")
         return 0
     if carries_note(vault, rel, tool_input):
-        decide("deny", "Recall: the text has a {CLAUDE: ...} note from the inbox. A note never goes into a page: "
-                       "write the page without it.")
+        decide("deny", "Recall: the text has a {CLAUDE: ...} note the page doesn't have, such as one from the "
+                       "inbox. A note never goes into a page: write the page without it.")
         return 0
     session_file = vault / SRS_DIR / "session.json"
     if session_file.exists() and rel.lower().endswith(".md") and not any(p.startswith(".") for p in parts):

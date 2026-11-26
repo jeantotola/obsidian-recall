@@ -1328,16 +1328,45 @@ INBOX_OWN_LINES = ({line for code in INBOX_HEADER_TEXT for n in range(1, 7)
                     for line in inbox_header_lines(code, n) + old_header_lines(code, n) if line.strip()}
                    | {LEGACY_INBOX_LINE})
 
-# A note the user leaves for /integrate inside an inbox block.
+# A note the user leaves for the model: in an inbox block for /integrate, in a page for /maintenance.
 NOTE_RE = re.compile(r"\{\s*CLAUDE\b[^}]*\}")
 
 
+def unfenced(text: str) -> str:
+    """The text with fenced code blocks blanked, so line numbers stay the same."""
+    fence = FenceTracker()
+    return "\n".join("" if fence.step(line) else line for line in text.splitlines())
+
+
 def count_notes(text: str) -> int:
-    fence, kept = FenceTracker(), []
-    for line in text.splitlines():
-        if not fence.step(line):
-            kept.append(line)
-    return len(NOTE_RE.findall("\n".join(kept)))
+    return len(NOTE_RE.findall(unfenced(text)))
+
+
+def page_notes(text: str) -> list:
+    """The notes in a page, outside code blocks, as (line number, note on one line)."""
+    kept = unfenced(text)
+    return [(kept.count("\n", 0, m.start()) + 1, " ".join(m.group(0).split())) for m in NOTE_RE.finditer(kept)]
+
+
+def notes_in_pages(v: Vault) -> list:
+    """Every note in the vault's pages, as (path, line, note), for /maintenance."""
+    found = []
+    for rel in content_pages(v):
+        found += [(rel, line, note) for line, note in page_notes(read_text(v.root / rel))]
+    return found
+
+
+def note_lines(v: Vault) -> list:
+    """The context section that lists the notes in pages; nothing when there are none."""
+    notes = notes_in_pages(v)
+    if not notes:
+        return []
+    pages = len({rel for rel, _, _ in notes})
+    out = ["", f"## Notes in pages ({plural(len(notes), 'note')} in {plural(pages, 'page')})",
+           "Read each page in full and take its notes into account as the rules say. A page is sealed "
+           "only once its notes are gone."]
+    out += [f"  {rel}:{line}: {note}" for rel, line, note in notes]
+    return out
 
 
 @dataclass
@@ -3076,6 +3105,9 @@ def cmd_verify(args):
         if shared:
             refused.append(f"{page.path}: concept names also used elsewhere: {', '.join(shared)}")
             continue
+        if page_notes(decoded(data)):
+            refused.append(f"{page.path}: it still has a {{CLAUDE: ...}} note; settle it and remove it first")
+            continue
         verified[page.path] = seal_record(v, page)
         sealed.append(page.path)
     if sealed:
@@ -3431,7 +3463,8 @@ WELCOME_STRINGS = {
     },
 }
 WELCOME_MAX_TITLES = 3
-MAINTENANCE_PAGES = 5  # the welcome suggests /maintenance with this many pages unsealed or not in the index
+MAINTENANCE_PAGES = 5  # the welcome suggests /maintenance with this many pages unsealed or not in the index,
+# or with any of them when a page has a note
 MAINTENANCE_DAYS = 14  # or with any such page, this long after the last seal
 
 
@@ -3487,7 +3520,9 @@ def welcome_maintenance(v: Vault, state: dict, words: dict):
                 if r.get("gap") and int(r["gap"].get("fails") or 0) >= GAP_STUCK_FAILS)
     leeches = sum(1 for r in state["concepts"].values() if int(r.get("lapses") or 0) >= v.leech_at)
     waiting = pending + unindexed
-    worth_it = waiting >= MAINTENANCE_PAGES or (waiting and age is not None and age >= MAINTENANCE_DAYS)
+    # a note in a page asks for the next /maintenance, however few pages changed
+    worth_it = waiting >= MAINTENANCE_PAGES or (waiting and age is not None and age >= MAINTENANCE_DAYS) \
+        or (waiting and notes_in_pages(v))
     if not (worth_it or stuck or leeches):
         return None
     parts = []
@@ -4641,6 +4676,8 @@ def audit_batch_lines(v: Vault, report: dict, targets=None) -> list:
             continue
         batch.append(page)
     if targets is None:
+        noted = {rel for rel, _, _ in notes_in_pages(v)}
+        batch.sort(key=lambda page: page.path not in noted)
         later = max(0, len(batch) - v.limits["maintenance_batch"])
         batch = batch[: v.limits["maintenance_batch"]]
     out.append(f"## Batch to audit ({len(batch)} pages; over-size pages and pages with shared names are left out)")
@@ -4694,6 +4731,7 @@ def context_maintenance(v: Vault) -> list:
     out += index_batch_lines(v, report)
     out += folder_map_lines(v)
     out += unaudited_lines(v, report)
+    out += note_lines(v)
     out.append("")
     out += audit_batch_lines(v, report)
     out.append("")
